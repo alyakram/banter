@@ -1,2 +1,2 @@
 ExUnit.start()
-Ecto.Adapters.SQL.Sandbox.mode(DiscordClone.Repo, :manual)
+Ecto.Adapters.SQL.Sandbox.mode(Banter.Repo, :manual)

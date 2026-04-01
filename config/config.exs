@@ -7,19 +7,78 @@
 # General application configuration
 import Config
 
-config :discord_clone,
-  ecto_repos: [DiscordClone.Repo],
-  generators: [timestamp_type: :utc_datetime]
+config :ash_oban, pro?: false
+
+config :banter, Oban,
+  engine: Oban.Engines.Basic,
+  notifier: Oban.Notifiers.Postgres,
+  queues: [default: 10],
+  repo: Banter.Repo,
+  plugins: [
+    {Oban.Plugins.Cron,
+     crontab: [
+       {"* * * * *", Banter.Workers.VoiceCleanupWorker}
+     ]}
+  ]
+
+config :ash,
+  allow_forbidden_field_for_relationships_by_default?: true,
+  include_embedded_source_by_default?: false,
+  show_keysets_for_all_actions?: false,
+  default_page_type: :keyset,
+  policies: [no_filter_static_forbidden_reads?: false],
+  keep_read_action_loads_when_loading?: false,
+  default_actions_require_atomic?: true,
+  read_action_after_action_hooks_in_order?: true,
+  bulk_actions_default_to_errors?: true,
+  transaction_rollback_on_error?: true,
+  known_types: [AshPostgres.Timestamptz, AshPostgres.TimestamptzUsec]
+
+config :spark,
+  formatter: [
+    remove_parens?: true,
+    "Ash.Resource": [
+      section_order: [
+        :admin,
+        :authentication,
+        :token,
+        :user_identity,
+        :postgres,
+        :resource,
+        :code_interface,
+        :actions,
+        :policies,
+        :pub_sub,
+        :preparations,
+        :changes,
+        :validations,
+        :multitenancy,
+        :attributes,
+        :relationships,
+        :calculations,
+        :aggregates,
+        :identities
+      ]
+    ],
+    "Ash.Domain": [
+      section_order: [:admin, :resources, :policies, :authorization, :domain, :execution]
+    ]
+  ]
+
+config :banter,
+  ecto_repos: [Banter.Repo],
+  generators: [timestamp_type: :utc_datetime],
+  ash_domains: [Banter.Accounts, Banter.Chat]
 
 # Configure the endpoint
-config :discord_clone, DiscordCloneWeb.Endpoint,
+config :banter, BanterWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
-    formats: [html: DiscordCloneWeb.ErrorHTML, json: DiscordCloneWeb.ErrorJSON],
+    formats: [html: BanterWeb.ErrorHTML, json: BanterWeb.ErrorJSON],
     layout: false
   ],
-  pubsub_server: DiscordClone.PubSub,
+  pubsub_server: Banter.PubSub,
   live_view: [signing_salt: "Sx2YUIbv"]
 
 # Configure the mailer
@@ -29,12 +88,12 @@ config :discord_clone, DiscordCloneWeb.Endpoint,
 #
 # For production it's recommended to configure a different adapter
 # at the `config/runtime.exs`.
-config :discord_clone, DiscordClone.Mailer, adapter: Swoosh.Adapters.Local
+config :banter, Banter.Mailer, adapter: Swoosh.Adapters.Local
 
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.25.4",
-  discord_clone: [
+  banter: [
     args:
       ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
     cd: Path.expand("../assets", __DIR__),
@@ -44,7 +103,7 @@ config :esbuild,
 # Configure tailwind (the version is required)
 config :tailwind,
   version: "4.1.12",
-  discord_clone: [
+  banter: [
     args: ~w(
       --input=assets/css/app.css
       --output=priv/static/assets/css/app.css

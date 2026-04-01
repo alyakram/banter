@@ -1,0 +1,44 @@
+# Dependencies
+/deps/
+/node_modules/
+
+# Build artifacts
+/_build/
+/priv/static/
+
+# Language server
+/.elixir_ls/
+/.lexical/
+
+# Lock files (usually not needed for context)
+mix.lock
+package-lock.json
+yarn.lock
+
+# Logs
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+/.vscode/
+/.idea/
+
+# Test coverage
+/cover/
+
+# Temporary files
+/tmp/
+*.tmp
+*.swp
+*.swo
+
+# Large generated files
+/priv/resource_snapshots/

@@ -1,6 +1,6 @@
-defmodule DiscordClone do
+defmodule Banter do
   @moduledoc """
-  DiscordClone keeps the contexts that define your domain
+  Banter keeps the contexts that define your domain
   and business logic.
 
   Contexts are also responsible for managing your data, regardless

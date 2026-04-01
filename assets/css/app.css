@@ -2,9 +2,10 @@
    https://tailwindcss.com/docs/configuration */
 
 @import "tailwindcss" source(none);
+@source "../../deps/ash_authentication_phoenix";
 @source "../css";
 @source "../js";
-@source "../../lib/discord_clone_web";
+@source "../../lib/banter_web";
 
 /* A Tailwind plugin that makes "hero-#{ICON}" classes available.
    The heroicons installation itself is managed by your mix.exs */
@@ -26,18 +27,18 @@
   default: false;
   prefersdark: true;
   color-scheme: "dark";
-  --color-base-100: oklch(30.33% 0.016 252.42);
-  --color-base-200: oklch(25.26% 0.014 253.1);
-  --color-base-300: oklch(20.15% 0.012 254.09);
-  --color-base-content: oklch(97.807% 0.029 256.847);
-  --color-primary: oklch(58% 0.233 277.117);
-  --color-primary-content: oklch(96% 0.018 272.314);
-  --color-secondary: oklch(58% 0.233 277.117);
-  --color-secondary-content: oklch(96% 0.018 272.314);
-  --color-accent: oklch(60% 0.25 292.717);
-  --color-accent-content: oklch(96% 0.016 293.756);
-  --color-neutral: oklch(37% 0.044 257.287);
-  --color-neutral-content: oklch(98% 0.003 247.858);
+  --color-base-100: oklch(14% 0.018 8);
+  --color-base-200: oklch(19% 0.022 8);
+  --color-base-300: oklch(11% 0.012 8);
+  --color-base-content: oklch(93% 0.014 8);
+  --color-primary: oklch(55% 0.22 18);
+  --color-primary-content: oklch(98% 0.006 8);
+  --color-secondary: oklch(44% 0.16 18);
+  --color-secondary-content: oklch(98% 0.006 8);
+  --color-accent: oklch(63% 0.26 12);
+  --color-accent-content: oklch(98% 0.005 8);
+  --color-neutral: oklch(26% 0.02 8);
+  --color-neutral-content: oklch(90% 0.01 8);
   --color-info: oklch(58% 0.158 241.966);
   --color-info-content: oklch(97% 0.013 236.62);
   --color-success: oklch(60% 0.118 184.704);
@@ -61,17 +62,17 @@
   default: true;
   prefersdark: false;
   color-scheme: "light";
-  --color-base-100: oklch(98% 0 0);
-  --color-base-200: oklch(96% 0.001 286.375);
-  --color-base-300: oklch(92% 0.004 286.32);
-  --color-base-content: oklch(21% 0.006 285.885);
-  --color-primary: oklch(70% 0.213 47.604);
-  --color-primary-content: oklch(98% 0.016 73.684);
-  --color-secondary: oklch(55% 0.027 264.364);
+  --color-base-100: oklch(98% 0.002 8);
+  --color-base-200: oklch(95% 0.006 8);
+  --color-base-300: oklch(90% 0.01 8);
+  --color-base-content: oklch(20% 0.015 8);
+  --color-primary: oklch(55% 0.22 18);
+  --color-primary-content: oklch(98% 0.006 8);
+  --color-secondary: oklch(50% 0.027 264.364);
   --color-secondary-content: oklch(98% 0.002 247.839);
-  --color-accent: oklch(0% 0 0);
-  --color-accent-content: oklch(100% 0 0);
-  --color-neutral: oklch(44% 0.017 285.786);
+  --color-accent: oklch(63% 0.26 12);
+  --color-accent-content: oklch(98% 0.005 8);
+  --color-neutral: oklch(44% 0.017 8);
   --color-neutral-content: oklch(98% 0 0);
   --color-info: oklch(62% 0.214 259.815);
   --color-info-content: oklch(97% 0.014 254.604);

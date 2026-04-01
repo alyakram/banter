@@ -1,4 +1,4 @@
-# DiscordClone
+# Banter
 
 To start your Phoenix server:
 

@@ -1,33 +1,65 @@
 import Config
+config :ash, policies: [show_policy_breakdowns?: true]
 
 # Configure your database
-config :discord_clone, DiscordClone.Repo,
+config :banter, Banter.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "discord_clone_dev",
+  database: "banter_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
 # For development, we disable any cache and enable
 # debugging and code reloading.
+
+config :logger, level: :debug
 #
 # The watchers configuration can be used to run external
 # watchers to your application. For example, we can use it
 # to bundle .js and .css sources.
-config :discord_clone, DiscordCloneWeb.Endpoint,
+config :banter, BanterWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}],
+  http: [ip: {0, 0, 0, 0}],
+  https: [
+    ip: {0, 0, 0, 0},
+    port: 4001,
+    keyfile: "priv/cert/selfsigned_key.pem",
+    certfile: "priv/cert/selfsigned.pem"
+  ],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,
   secret_key_base: "obZJxlcOztDbs0vfzoguPYfzi8TDuzgZwyFdkIX4DXKclZ6EFP41CvqYt6kWDXQT",
   watchers: [
-    esbuild: {Esbuild, :install_and_run, [:discord_clone, ~w(--sourcemap=inline --watch)]},
-    tailwind: {Tailwind, :install_and_run, [:discord_clone, ~w(--watch)]}
+    esbuild: {Esbuild, :install_and_run, [:banter, ~w(--sourcemap=inline --watch)]},
+    tailwind: {Tailwind, :install_and_run, [:banter, ~w(--watch)]}
   ]
+
+# Helper to find the local LAN IP
+get_local_ip = fn ->
+  {:ok, ifaddrs} = :inet.getifaddrs()
+
+  Enum.find_value(ifaddrs, fn {_name, opts} ->
+    addr = opts[:addr]
+
+    # CHECK 1: Ensure addr exists
+    # CHECK 2: Ensure it is an IPv4 tuple (size 4)
+    # CHECK 3: Ensure it is not localhost (127.0.0.1)
+    if addr && tuple_size(addr) == 4 && addr != {127, 0, 0, 1} do
+      addr |> Tuple.to_list() |> Enum.join(".")
+    else
+      nil
+    end
+  end) || "127.0.0.1"
+end
+
+config :banter, :webrtc,
+  ice_port_range: 50000..50050,
+  # This now dynamically grabs your LAN IP (e.g., 192.168.1.5)
+  external_ip: get_local_ip.()
 
 # ## SSL Support
 #
@@ -53,7 +85,7 @@ config :discord_clone, DiscordCloneWeb.Endpoint,
 # different ports.
 
 # Reload browser tabs when matching files change.
-config :discord_clone, DiscordCloneWeb.Endpoint,
+config :banter, BanterWeb.Endpoint,
   live_reload: [
     web_console_logger: true,
     patterns: [
@@ -62,13 +94,13 @@ config :discord_clone, DiscordCloneWeb.Endpoint,
       # Gettext translations
       ~r"priv/gettext/.*\.po$",
       # Router, Controllers, LiveViews and LiveComponents
-      ~r"lib/discord_clone_web/router\.ex$",
-      ~r"lib/discord_clone_web/(controllers|live|components)/.*\.(ex|heex)$"
+      ~r"lib/banter_web/router\.ex$",
+      ~r"lib/banter_web/(controllers|live|components)/.*\.(ex|heex)$"
     ]
   ]
 
 # Enable dev routes for dashboard and mailbox
-config :discord_clone, dev_routes: true
+config :banter, dev_routes: true, token_signing_secret: "//HQ7JHOJmyR1G4QOMhlNxK1c6gJOc+r"
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
@@ -90,3 +122,25 @@ config :phoenix_live_view,
 
 # Disable swoosh api client as it is only required for production adapters.
 config :swoosh, :api_client, false
+
+# WebRTC ICE server configuration for voice/video
+# TURN credentials are read from environment variables (set in .env).
+# ExICE only supports plain turn: URIs — no ?transport= query params, no turns: scheme.
+turn_username = System.get_env("metered_username")
+turn_credential = System.get_env("metered_password")
+
+turn_servers =
+  if turn_username && turn_credential do
+    [%{
+      urls: ["turn:global.relay.metered.ca:80", "turn:global.relay.metered.ca:443"],
+      username: turn_username,
+      credential: turn_credential
+    }]
+  else
+    []
+  end
+
+config :banter, :webrtc,
+  ice_servers: [%{urls: "stun:stun.l.google.com:19302"}] ++ turn_servers,
+  turn_username: turn_username,
+  turn_credential: turn_credential

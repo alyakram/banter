@@ -38,6 +38,16 @@ topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})
 window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 
+window.addEventListener("phx:copy", (e) => {
+  navigator.clipboard.writeText(e.detail.text)
+  const label = document.getElementById("invite-code-label")
+  if (label) {
+    const original = label.textContent
+    label.textContent = "✓ Copied!"
+    setTimeout(() => { label.textContent = original }, 1500)
+  }
+})
+
 // connect if there are any LiveViews on the page
 liveSocket.connect()
 

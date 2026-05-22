@@ -837,6 +837,7 @@ defmodule BanterWeb.ChatLive do
       <% end %>
 
       <Components.channel_sidebar
+        servers={@servers}
         current_server={@current_server}
         channels={@channels}
         current_channel={@current_channel}

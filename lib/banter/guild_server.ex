@@ -56,9 +56,9 @@ defmodule Banter.GuildServer do
 
   This serializes through the guild process, ensuring message ordering.
   """
-  def send_message(server_id, channel_id, user_id, content) do
+  def send_message(server_id, channel_id, user_id, content, opts \\ []) do
     with {:ok, _pid} <- ensure_started(server_id) do
-      GenServer.call(via_tuple(server_id), {:send_message, channel_id, user_id, content})
+      GenServer.call(via_tuple(server_id), {:send_message, channel_id, user_id, content, opts})
     end
   end
 
@@ -67,11 +67,11 @@ defmodule Banter.GuildServer do
 
   This serializes through the guild process, ensuring message ordering.
   """
-  def send_message_with_attachments(server_id, channel_id, user_id, content, attachment_data \\ []) do
+  def send_message_with_attachments(server_id, channel_id, user_id, content, attachment_data \\ [], opts \\ []) do
     with {:ok, _pid} <- ensure_started(server_id) do
       GenServer.call(
         via_tuple(server_id),
-        {:send_message_with_attachments, channel_id, user_id, content, attachment_data}
+        {:send_message_with_attachments, channel_id, user_id, content, attachment_data, opts}
       )
     end
   end
@@ -147,19 +147,24 @@ defmodule Banter.GuildServer do
   end
 
   @impl true
-  def handle_call({:send_message, channel_id, user_id, content}, _from, state) do
+  def handle_call({:send_message, channel_id, user_id, content, opts}, _from, state) do
     Logger.info("GuildServer received send_message: channel=#{channel_id}, user=#{user_id}")
 
     with {:ok, _channel} <- validate_channel(channel_id, state),
          {:ok, _member} <- validate_member(user_id, state) do
       Logger.debug("Validation passed, creating message...")
 
+      reply_to_id = Keyword.get(opts, :reply_to_id)
+      message_type = if reply_to_id, do: :reply, else: :default
+
       # Create message in database
       result =
         Chat.create_message(%{
           channel_id: channel_id,
           author_id: user_id,
-          content: content
+          content: content,
+          reply_to_id: reply_to_id,
+          message_type: message_type
         }, authorize?: false)
 
       case result do
@@ -184,24 +189,29 @@ defmodule Banter.GuildServer do
   end
 
   @impl true
-  def handle_call({:send_message_with_attachments, channel_id, user_id, content, attachment_data}, _from, state) do
+  def handle_call({:send_message_with_attachments, channel_id, user_id, content, attachment_data, opts}, _from, state) do
     Logger.info("GuildServer received send_message with #{length(attachment_data)} attachments")
 
     with {:ok, _channel} <- validate_channel(channel_id, state),
          {:ok, _member} <- validate_member(user_id, state) do
+      reply_to_id = Keyword.get(opts, :reply_to_id)
+      message_type = if reply_to_id, do: :reply, else: :default
+
       # Create message with attachments
       result =
         Chat.create_message(%{
           channel_id: channel_id,
           author_id: user_id,
           content: content,
-          attachments: attachment_data
+          attachments: attachment_data,
+          reply_to_id: reply_to_id,
+          message_type: message_type
         }, authorize?: false)
 
       case result do
         {:ok, message} ->
-          # Load attachments for broadcast
-          message = Ash.load!(message, :attachments)
+          # Load attachments and reply_to for broadcast
+          message = Ash.load!(message, [:attachments, reply_to: [:author]])
 
           Logger.info("✓ Message created with #{length(message.attachments)} attachments")
 
@@ -282,7 +292,7 @@ defmodule Banter.GuildServer do
   def handle_call({:edit_message, message_id, new_content, actor}, _from, state) do
     with {:ok, message} <- Chat.get_message(message_id, authorize?: false),
          {:ok, updated} <- Chat.edit_message(message, %{content: new_content}, actor: actor) do
-      updated = Ash.load!(updated, [:author, :attachments])
+      updated = Ash.load!(updated, [:author, :attachments, reply_to: [:author]])
       broadcast_event(state.server_id, {:message_update, updated})
       {:reply, {:ok, updated}, state, @idle_timeout}
     else

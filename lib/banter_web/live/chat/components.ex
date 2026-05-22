@@ -36,7 +36,7 @@ defmodule BanterWeb.ChatLive.Components do
         title="Join a server"
       >
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
         </svg>
       </button>
 
@@ -136,7 +136,7 @@ defmodule BanterWeb.ChatLive.Components do
             title="Join a server"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
             </svg>
           </button>
           <button
@@ -440,6 +440,29 @@ defmodule BanterWeb.ChatLive.Components do
   def user_info_bar(assigns) do
     ~H"""
     <div class="h-[52px] bg-base-300 px-2 flex items-center gap-2 relative">
+      <%!-- Theme toggle --%>
+      <button
+        id="theme-toggle"
+        type="button"
+        title="Toggle theme"
+        onclick="
+          const h = document.documentElement;
+          const next = h.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+          h.setAttribute('data-theme', next);
+          localStorage.setItem('phx:theme', next);
+        "
+        class="p-1.5 rounded text-base-content/50 hover:text-base-content hover:bg-base-100 transition-colors flex-shrink-0"
+      >
+        <%!-- Moon: shown in light mode (click to go dark) --%>
+        <svg class="w-4 h-4 dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+        </svg>
+        <%!-- Sun: shown in dark mode (click to go light) --%>
+        <svg class="w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z" />
+        </svg>
+      </button>
+
       <div class="relative">
         <div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-xs font-bold text-white">
           <%= if @current_user,
@@ -534,6 +557,11 @@ defmodule BanterWeb.ChatLive.Components do
   attr :uploads, :map, required: true
   attr :has_more_messages, :boolean, default: false
   attr :loading_more_messages, :boolean, default: false
+  attr :current_user, :map, default: nil
+  attr :editing_message_id, :string, default: nil
+  attr :editing_content, :string, default: ""
+  attr :confirming_delete_id, :string, default: nil
+  attr :selected_message_id, :string, default: nil
 
   def chat_area(assigns) do
     ~H"""
@@ -545,6 +573,11 @@ defmodule BanterWeb.ChatLive.Components do
           channel={@current_channel}
           has_more={@has_more_messages}
           loading_more={@loading_more_messages}
+          current_user={@current_user}
+          editing_message_id={@editing_message_id}
+          editing_content={@editing_content}
+          confirming_delete_id={@confirming_delete_id}
+          selected_message_id={@selected_message_id}
         />
         <.message_input channel={@current_channel} message_input={@message_input} uploads={@uploads} />
       <% else %>
@@ -595,6 +628,11 @@ defmodule BanterWeb.ChatLive.Components do
   attr :channel, :map, required: true
   attr :has_more, :boolean, default: false
   attr :loading_more, :boolean, default: false
+  attr :current_user, :map, default: nil
+  attr :editing_message_id, :string, default: nil
+  attr :editing_content, :string, default: ""
+  attr :confirming_delete_id, :string, default: nil
+  attr :selected_message_id, :string, default: nil
 
   def message_feed(assigns) do
     ~H"""
@@ -621,9 +659,24 @@ defmodule BanterWeb.ChatLive.Components do
           <% compact = same_author && !time_gap %>
 
           <%= if !compact do %>
-            <.message_full message={message} show_divider={i > 0} />
+            <.message_full
+              message={message}
+              show_divider={i > 0}
+              current_user={@current_user}
+              editing_message_id={@editing_message_id}
+              editing_content={@editing_content}
+              confirming_delete_id={@confirming_delete_id}
+              selected_message_id={@selected_message_id}
+            />
           <% else %>
-            <.message_compact message={message} />
+            <.message_compact
+              message={message}
+              current_user={@current_user}
+              editing_message_id={@editing_message_id}
+              editing_content={@editing_content}
+              confirming_delete_id={@confirming_delete_id}
+              selected_message_id={@selected_message_id}
+            />
           <% end %>
         <% end %>
       <% end %>
@@ -657,38 +710,68 @@ defmodule BanterWeb.ChatLive.Components do
   """
   attr :message, :map, required: true
   attr :show_divider, :boolean, default: false
+  attr :current_user, :map, default: nil
+  attr :editing_message_id, :string, default: nil
+  attr :editing_content, :string, default: ""
+  attr :confirming_delete_id, :string, default: nil
+  attr :selected_message_id, :string, default: nil
 
   def message_full(assigns) do
     ~H"""
     <div class={[
-      "flex gap-4 hover:bg-base-200 px-2 py-0.5 rounded group",
-      if(@show_divider, do: "mt-4")
+      "flex gap-3 hover:bg-base-200/50 px-2 py-1 rounded-lg group items-start",
+      if(@show_divider, do: "mt-3")
     ]}>
       <%!-- Avatar --%>
-      <div class="w-10 h-10 rounded-full bg-primary flex-shrink-0 flex items-center justify-center text-sm font-bold text-white mt-0.5">
+      <div class="w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] rounded-full bg-primary flex-none self-start flex items-center justify-center text-sm font-bold text-white mt-0.5">
         <%= author_initial(@message) %>
       </div>
+
+      <%!-- Content --%>
       <div class="flex-1 min-w-0">
-        <div class="flex items-baseline gap-2">
-          <span class="font-medium text-white text-[15px] hover:underline cursor-pointer">
-            <%= author_name(@message) %>
-          </span>
-          <span class="text-[11px] text-base-content/50">
-            <%= format_timestamp(@message.inserted_at) %>
-          </span>
+        <div class="flex items-baseline gap-2 mb-0.5">
+          <span class="font-semibold text-base-content text-[14px]"><%= author_name(@message) %></span>
+          <span class="text-[10px] text-base-content/40"><%= format_timestamp(@message.inserted_at) %></span>
           <%= if @message.edited_at do %>
-            <span class="text-[10px] text-base-content/50">(edited)</span>
+            <span class="text-[10px] text-base-content/40">(edited)</span>
           <% end %>
         </div>
-        <%= if @message.content && @message.content != "" do %>
-          <p class="text-base-content text-[15px] leading-relaxed break-words">
-            <%= @message.content %>
-          </p>
-        <% end %>
-        <%= if has_attachments?(@message) do %>
-          <.message_attachments attachments={@message.attachments} />
+
+        <%= if @message.id == @editing_message_id do %>
+          <.inline_edit_form message={@message} editing_content={@editing_content} />
+        <% else %>
+          <div class={message_bubble_class(@message, @current_user)}>
+            <%= if @message.content && @message.content != "" do %>
+              <p class="text-[15px] leading-relaxed break-words whitespace-pre-wrap"><%= @message.content %></p>
+            <% end %>
+            <%= if has_attachments?(@message) do %>
+              <.message_attachments attachments={@message.attachments} />
+            <% end %>
+          </div>
+          <%= if @message.id == @confirming_delete_id do %>
+            <.inline_delete_confirm message={@message} />
+          <% end %>
         <% end %>
       </div>
+
+      <%!-- ⋮ action trigger (own messages only) --%>
+      <%= if @current_user && @message.author_id == @current_user.id && @message.id != @editing_message_id do %>
+        <div class="flex-shrink-0 self-start mt-0.5 relative">
+          <button
+            phx-click="select_message"
+            phx-value-id={@message.id}
+            class="w-7 h-7 flex items-center justify-center rounded text-base-content/30 hover:text-base-content hover:bg-base-300 transition-colors opacity-60 md:opacity-0 md:group-hover:opacity-100"
+            title="Message options"
+          >
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+              <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+            </svg>
+          </button>
+          <%= if @message.id == @selected_message_id do %>
+            <.message_action_menu message={@message} />
+          <% end %>
+        </div>
+      <% end %>
     </div>
     """
   end
@@ -697,25 +780,63 @@ defmodule BanterWeb.ChatLive.Components do
   Compact message without avatar (for consecutive messages from same author).
   """
   attr :message, :map, required: true
+  attr :current_user, :map, default: nil
+  attr :editing_message_id, :string, default: nil
+  attr :editing_content, :string, default: ""
+  attr :confirming_delete_id, :string, default: nil
+  attr :selected_message_id, :string, default: nil
 
   def message_compact(assigns) do
     ~H"""
-    <div class="flex gap-4 hover:bg-base-200 px-2 py-0 rounded group">
-      <div class="w-10 flex-shrink-0 flex items-center justify-center">
-        <span class="text-[11px] text-base-content/50 opacity-0 group-hover:opacity-100 transition-opacity">
+    <div class="flex gap-3 hover:bg-base-200/50 px-2 py-0.5 rounded-lg group items-start">
+      <div class="w-9 flex-shrink-0 flex justify-center pt-1.5">
+        <span class="text-[10px] text-base-content/40 opacity-0 group-hover:opacity-100 transition-opacity">
           <%= Calendar.strftime(@message.inserted_at, "%H:%M") %>
         </span>
       </div>
+
+      <%!-- Content --%>
       <div class="flex-1 min-w-0">
-        <%= if @message.content && @message.content != "" do %>
-          <p class="text-base-content text-[15px] leading-relaxed break-words">
-            <%= @message.content %>
-          </p>
-        <% end %>
-        <%= if has_attachments?(@message) do %>
-          <.message_attachments attachments={@message.attachments} />
+        <%!-- Author name: only shown on mobile since desktop relies on the preceding full message --%>
+        <span class="md:hidden text-[11px] font-semibold text-base-content/70 block mb-0.5">
+          <%= author_name(@message) %>
+        </span>
+
+        <%= if @message.id == @editing_message_id do %>
+          <.inline_edit_form message={@message} editing_content={@editing_content} />
+        <% else %>
+          <div class={message_bubble_class(@message, @current_user)}>
+            <%= if @message.content && @message.content != "" do %>
+              <p class="text-[15px] leading-relaxed break-words whitespace-pre-wrap"><%= @message.content %></p>
+            <% end %>
+            <%= if has_attachments?(@message) do %>
+              <.message_attachments attachments={@message.attachments} />
+            <% end %>
+          </div>
+          <%= if @message.id == @confirming_delete_id do %>
+            <.inline_delete_confirm message={@message} />
+          <% end %>
         <% end %>
       </div>
+
+      <%!-- ⋮ action trigger (own messages only) --%>
+      <%= if @current_user && @message.author_id == @current_user.id && @message.id != @editing_message_id do %>
+        <div class="flex-shrink-0 self-start relative">
+          <button
+            phx-click="select_message"
+            phx-value-id={@message.id}
+            class="w-7 h-7 flex items-center justify-center rounded text-base-content/30 hover:text-base-content hover:bg-base-300 transition-colors opacity-60 md:opacity-0 md:group-hover:opacity-100"
+            title="Message options"
+          >
+            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+              <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+            </svg>
+          </button>
+          <%= if @message.id == @selected_message_id do %>
+            <.message_action_menu message={@message} />
+          <% end %>
+        </div>
+      <% end %>
     </div>
     """
   end
@@ -1117,6 +1238,93 @@ defmodule BanterWeb.ChatLive.Components do
     """
   end
 
+  attr :message, :map, required: true
+
+  defp message_action_menu(assigns) do
+    ~H"""
+    <div
+      id={"msg-menu-#{@message.id}"}
+      class="absolute right-0 top-full mt-1 w-32 bg-base-300 border border-neutral rounded-xl shadow-xl z-20 py-1 overflow-hidden"
+      phx-click-away="deselect_message"
+    >
+      <button
+        phx-click="start_edit"
+        phx-value-id={@message.id}
+        class="w-full flex items-center gap-2 px-3 py-2 text-sm text-base-content hover:bg-neutral transition-colors text-left"
+      >
+        <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+        </svg>
+        Edit
+      </button>
+      <button
+        phx-click="confirm_delete"
+        phx-value-id={@message.id}
+        class="w-full flex items-center gap-2 px-3 py-2 text-sm text-error hover:bg-neutral transition-colors text-left"
+      >
+        <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        </svg>
+        Delete
+      </button>
+    </div>
+    """
+  end
+
+  attr :message, :map, required: true
+  attr :editing_content, :string, required: true
+
+  defp inline_edit_form(assigns) do
+    ~H"""
+    <form phx-submit="save_edit" phx-change="update_edit" class="mt-1">
+      <input type="hidden" name="message_id" value={@message.id} />
+      <textarea
+        name="content"
+        rows="3"
+        class="w-full bg-base-300 border border-neutral rounded px-3 py-2 text-[15px] text-base-content placeholder-base-content/50 focus:border-primary focus:ring-1 focus:ring-primary outline-none resize-none"
+      ><%= @editing_content %></textarea>
+      <div class="flex items-center gap-2 mt-1">
+        <button
+          type="submit"
+          class="px-3 py-1 bg-primary hover:bg-secondary text-white text-xs font-medium rounded transition-colors"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          phx-click="cancel_edit"
+          class="px-3 py-1 text-xs text-base-content/60 hover:text-base-content transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+    """
+  end
+
+  attr :message, :map, required: true
+
+  defp inline_delete_confirm(assigns) do
+    ~H"""
+    <div class="flex items-center gap-2 mt-1 py-1 px-2 bg-error/10 border border-error/30 rounded">
+      <span class="text-xs text-error flex-1">Delete this message?</span>
+      <button
+        phx-click="delete_message"
+        phx-value-id={@message.id}
+        class="px-2 py-0.5 bg-error hover:bg-error/80 text-white text-xs font-medium rounded transition-colors"
+      >
+        Confirm
+      </button>
+      <button
+        phx-click="cancel_delete"
+        class="px-2 py-0.5 text-xs text-base-content/60 hover:text-base-content transition-colors"
+      >
+        Cancel
+      </button>
+    </div>
+    """
+  end
+
   # ── Helper Functions ─────────────────────────────────────────────────────
 
   defp server_initials(name) do
@@ -1208,4 +1416,11 @@ defmodule BanterWeb.ChatLive.Components do
   end
 
   defp has_attachments?(_), do: false
+
+  defp message_bubble_class(message, current_user) do
+    is_own = current_user && message.author_id == current_user.id
+    base = "w-fit max-w-full rounded-2xl px-3 py-2"
+    color = if is_own, do: "bg-primary/20", else: "bg-base-200"
+    "#{base} #{color}"
+  end
 end

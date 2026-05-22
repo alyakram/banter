@@ -11,6 +11,7 @@ defmodule Banter.Chat.Message do
     otp_app: :banter,
     domain: Banter.Chat,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     extensions: [AshArchival.Resource, AshPaperTrail.Resource]
 
   postgres do
@@ -91,6 +92,28 @@ defmodule Banter.Chat.Message do
 
     has_many :attachments, Banter.Chat.Attachment do
       public? true
+    end
+  end
+
+  policies do
+    bypass AshAuthentication.Checks.AshAuthenticationInteraction do
+      authorize_if always()
+    end
+
+    policy action_type(:read) do
+      authorize_if always()
+    end
+
+    policy action(:create) do
+      authorize_if always()
+    end
+
+    policy action([:update, :pin, :unpin]) do
+      authorize_if expr(author_id == ^actor(:id))
+    end
+
+    policy action(:destroy) do
+      authorize_if expr(author_id == ^actor(:id))
     end
   end
 

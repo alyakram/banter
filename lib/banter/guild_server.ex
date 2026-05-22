@@ -99,6 +99,24 @@ defmodule Banter.GuildServer do
   end
 
   @doc """
+  Edits a message in the guild. The actor must be the message author.
+  """
+  def edit_message(server_id, message_id, new_content, actor) do
+    with {:ok, _pid} <- ensure_started(server_id) do
+      GenServer.call(via_tuple(server_id), {:edit_message, message_id, new_content, actor})
+    end
+  end
+
+  @doc """
+  Deletes a message in the guild. The actor must be the message author.
+  """
+  def delete_message(server_id, message_id, actor) do
+    with {:ok, _pid} <- ensure_started(server_id) do
+      GenServer.call(via_tuple(server_id), {:delete_message, message_id, actor})
+    end
+  end
+
+  @doc """
   Creates a new channel in the guild.
   """
   def create_channel(server_id, user_id, name, opts \\ []) do
@@ -142,7 +160,7 @@ defmodule Banter.GuildServer do
           channel_id: channel_id,
           author_id: user_id,
           content: content
-        })
+        }, authorize?: false)
 
       case result do
         {:ok, message} ->
@@ -178,7 +196,7 @@ defmodule Banter.GuildServer do
           author_id: user_id,
           content: content,
           attachments: attachment_data
-        })
+        }, authorize?: false)
 
       case result do
         {:ok, message} ->
@@ -258,6 +276,37 @@ defmodule Banter.GuildServer do
   @impl true
   def handle_call(:get_state, _from, state) do
     {:reply, {:ok, state}, state, @idle_timeout}
+  end
+
+  @impl true
+  def handle_call({:edit_message, message_id, new_content, actor}, _from, state) do
+    with {:ok, message} <- Chat.get_message(message_id, authorize?: false),
+         {:ok, updated} <- Chat.edit_message(message, %{content: new_content}, actor: actor) do
+      updated = Ash.load!(updated, [:author, :attachments])
+      broadcast_event(state.server_id, {:message_update, updated})
+      {:reply, {:ok, updated}, state, @idle_timeout}
+    else
+      {:error, error} ->
+        {:reply, {:error, error}, state, @idle_timeout}
+    end
+  end
+
+  @impl true
+  def handle_call({:delete_message, message_id, actor}, _from, state) do
+    case Chat.get_message(message_id, authorize?: false) do
+      {:ok, message} ->
+        case Chat.delete_message(message, actor: actor) do
+          result when result == :ok or (is_tuple(result) and elem(result, 0) == :ok) ->
+            broadcast_event(state.server_id, {:message_delete, message_id})
+            {:reply, :ok, state, @idle_timeout}
+
+          {:error, error} ->
+            {:reply, {:error, error}, state, @idle_timeout}
+        end
+
+      {:error, error} ->
+        {:reply, {:error, error}, state, @idle_timeout}
+    end
   end
 
   @impl true

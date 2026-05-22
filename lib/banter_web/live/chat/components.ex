@@ -563,6 +563,7 @@ defmodule BanterWeb.ChatLive.Components do
   attr :confirming_delete_id, :string, default: nil
   attr :selected_message_id, :string, default: nil
   attr :replying_to, :map, default: nil
+  attr :typing_users, :map, default: %{}
 
   def chat_area(assigns) do
     ~H"""
@@ -580,7 +581,7 @@ defmodule BanterWeb.ChatLive.Components do
           confirming_delete_id={@confirming_delete_id}
           selected_message_id={@selected_message_id}
         />
-        <.message_input channel={@current_channel} message_input={@message_input} uploads={@uploads} replying_to={@replying_to} />
+        <.message_input channel={@current_channel} message_input={@message_input} uploads={@uploads} replying_to={@replying_to} typing_users={@typing_users} />
       <% else %>
         <%!-- Mobile hamburger shown in empty state too --%>
         <div class="lg:hidden h-12 px-4 flex items-center border-b border-base-300 flex-shrink-0">
@@ -879,6 +880,7 @@ defmodule BanterWeb.ChatLive.Components do
   attr :message_input, :string, required: true
   attr :uploads, :map, required: true
   attr :replying_to, :map, default: nil
+  attr :typing_users, :map, default: %{}
 
   def message_input(assigns) do
     ~H"""
@@ -952,6 +954,20 @@ defmodule BanterWeb.ChatLive.Components do
           </svg>
         </button>
       </.form>
+
+      <%!-- Typing indicator --%>
+      <div class="h-4 mt-1.5">
+        <%= if map_size(@typing_users) > 0 do %>
+          <div class="flex items-center gap-1.5 text-xs text-base-content/50">
+            <div class="flex items-end gap-px">
+              <span class="w-1 h-1 bg-base-content/40 rounded-full animate-bounce" style="animation-delay: 0ms"></span>
+              <span class="w-1 h-1 bg-base-content/40 rounded-full animate-bounce" style="animation-delay: 100ms"></span>
+              <span class="w-1 h-1 bg-base-content/40 rounded-full animate-bounce" style="animation-delay: 200ms"></span>
+            </div>
+            <span><%= typing_indicator_text(@typing_users) %></span>
+          </div>
+        <% end %>
+      </div>
 
       <%!-- Upload errors --%>
       <%= for err <- upload_errors(@uploads.attachments) do %>
@@ -1484,6 +1500,16 @@ defmodule BanterWeb.ChatLive.Components do
   defp error_to_string(:too_many_files), do: "Too many files (max 10 images)"
   defp error_to_string(:not_accepted), do: "Only image files are allowed"
   defp error_to_string(_), do: "Upload error"
+
+  defp typing_indicator_text(typing_users) do
+    names = Map.values(typing_users)
+
+    case length(names) do
+      1 -> "#{List.first(names)} is typing..."
+      2 -> "#{Enum.at(names, 0)} and #{Enum.at(names, 1)} are typing..."
+      _ -> "Several people are typing..."
+    end
+  end
 
   defp has_attachments?(%{attachments: attachments}) when is_list(attachments) do
     length(attachments) > 0

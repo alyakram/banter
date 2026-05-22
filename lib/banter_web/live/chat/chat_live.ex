@@ -76,6 +76,7 @@ defmodule BanterWeb.ChatLive do
       |> assign(:confirming_delete_id, nil)
       |> assign(:selected_message_id, nil)
       |> assign(:replying_to, nil)
+      |> assign(:typing_users, %{})
       |> allow_upload(:attachments,
         accept: ~w(.jpg .jpeg .png .gif .webp .svg),
         max_entries: 10,
@@ -324,6 +325,17 @@ defmodule BanterWeb.ChatLive do
   end
 
   def handle_event("update_message_input", %{"content" => content}, socket) do
+    if content != "" && socket.assigns.current_channel && socket.assigns.current_server do
+      user = socket.assigns.current_user
+      name = user.email |> to_string() |> String.split("@") |> List.first()
+
+      Phoenix.PubSub.broadcast(
+        Banter.PubSub,
+        "guild:#{socket.assigns.current_server.id}",
+        {:guild_event, {:typing, user.id, name, socket.assigns.current_channel.id}}
+      )
+    end
+
     {:noreply, assign(socket, :message_input, content)}
   end
 
@@ -811,6 +823,25 @@ defmodule BanterWeb.ChatLive do
   end
 
   @impl true
+  def handle_info({:guild_event, {:typing, user_id, name, channel_id}}, socket) do
+    current_user_id = socket.assigns[:current_user] && socket.assigns.current_user.id
+
+    if user_id != current_user_id &&
+         socket.assigns.current_channel &&
+         socket.assigns.current_channel.id == channel_id do
+      Process.send_after(self(), {:clear_typing, user_id}, 3000)
+      {:noreply, update(socket, :typing_users, &Map.put(&1, user_id, name))}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:clear_typing, user_id}, socket) do
+    {:noreply, update(socket, :typing_users, &Map.delete(&1, user_id))}
+  end
+
+  @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
   end
@@ -934,6 +965,7 @@ defmodule BanterWeb.ChatLive do
         |> assign(:messages_cursor, cursor)
         |> assign(:has_more_messages, has_more)
         |> assign(:loading_more_messages, false)
+        |> assign(:typing_users, %{})
 
       {:error, _} ->
         socket
@@ -1003,6 +1035,7 @@ defmodule BanterWeb.ChatLive do
         confirming_delete_id={@confirming_delete_id}
         selected_message_id={@selected_message_id}
         replying_to={@replying_to}
+        typing_users={@typing_users}
       />
 
       <Components.members_sidebar

@@ -562,6 +562,7 @@ defmodule BanterWeb.ChatLive.Components do
   attr :editing_content, :string, default: ""
   attr :confirming_delete_id, :string, default: nil
   attr :selected_message_id, :string, default: nil
+  attr :replying_to, :map, default: nil
 
   def chat_area(assigns) do
     ~H"""
@@ -579,7 +580,7 @@ defmodule BanterWeb.ChatLive.Components do
           confirming_delete_id={@confirming_delete_id}
           selected_message_id={@selected_message_id}
         />
-        <.message_input channel={@current_channel} message_input={@message_input} uploads={@uploads} />
+        <.message_input channel={@current_channel} message_input={@message_input} uploads={@uploads} replying_to={@replying_to} />
       <% else %>
         <%!-- Mobile hamburger shown in empty state too --%>
         <div class="lg:hidden h-12 px-4 flex items-center border-b border-base-300 flex-shrink-0">
@@ -740,6 +741,7 @@ defmodule BanterWeb.ChatLive.Components do
         <%= if @message.id == @editing_message_id do %>
           <.inline_edit_form message={@message} editing_content={@editing_content} />
         <% else %>
+          <.reply_quote message={@message} />
           <div class={message_bubble_class(@message, @current_user)}>
             <%= if @message.content && @message.content != "" do %>
               <p class="text-[15px] leading-relaxed break-words whitespace-pre-wrap"><%= @message.content %></p>
@@ -754,21 +756,35 @@ defmodule BanterWeb.ChatLive.Components do
         <% end %>
       </div>
 
-      <%!-- ⋮ action trigger (own messages only) --%>
-      <%= if @current_user && @message.author_id == @current_user.id && @message.id != @editing_message_id do %>
-        <div class="flex-shrink-0 self-start mt-0.5 relative">
+      <%!-- Action buttons: reply (all) + ⋮ (own only) --%>
+      <%= if @message.id != @editing_message_id do %>
+        <div class="flex-shrink-0 self-start mt-0.5 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
-            phx-click="select_message"
+            phx-click="start_reply"
             phx-value-id={@message.id}
-            class="w-7 h-7 flex items-center justify-center rounded text-base-content/30 hover:text-base-content hover:bg-base-300 transition-colors opacity-60 md:opacity-0 md:group-hover:opacity-100"
-            title="Message options"
+            class="w-7 h-7 flex items-center justify-center rounded text-base-content/40 hover:text-base-content hover:bg-base-300 transition-colors"
+            title="Reply"
           >
-            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-              <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
             </svg>
           </button>
-          <%= if @message.id == @selected_message_id do %>
-            <.message_action_menu message={@message} />
+          <%= if @current_user && @message.author_id == @current_user.id do %>
+            <div class="relative">
+              <button
+                phx-click="select_message"
+                phx-value-id={@message.id}
+                class="w-7 h-7 flex items-center justify-center rounded text-base-content/40 hover:text-base-content hover:bg-base-300 transition-colors"
+                title="Message options"
+              >
+                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+                </svg>
+              </button>
+              <%= if @message.id == @selected_message_id do %>
+                <.message_action_menu message={@message} />
+              <% end %>
+            </div>
           <% end %>
         </div>
       <% end %>
@@ -805,6 +821,7 @@ defmodule BanterWeb.ChatLive.Components do
         <%= if @message.id == @editing_message_id do %>
           <.inline_edit_form message={@message} editing_content={@editing_content} />
         <% else %>
+          <.reply_quote message={@message} />
           <div class={message_bubble_class(@message, @current_user)}>
             <%= if @message.content && @message.content != "" do %>
               <p class="text-[15px] leading-relaxed break-words whitespace-pre-wrap"><%= @message.content %></p>
@@ -819,21 +836,35 @@ defmodule BanterWeb.ChatLive.Components do
         <% end %>
       </div>
 
-      <%!-- ⋮ action trigger (own messages only) --%>
-      <%= if @current_user && @message.author_id == @current_user.id && @message.id != @editing_message_id do %>
-        <div class="flex-shrink-0 self-start relative">
+      <%!-- Action buttons: reply (all) + ⋮ (own only) --%>
+      <%= if @message.id != @editing_message_id do %>
+        <div class="flex-shrink-0 self-start flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
-            phx-click="select_message"
+            phx-click="start_reply"
             phx-value-id={@message.id}
-            class="w-7 h-7 flex items-center justify-center rounded text-base-content/30 hover:text-base-content hover:bg-base-300 transition-colors opacity-60 md:opacity-0 md:group-hover:opacity-100"
-            title="Message options"
+            class="w-7 h-7 flex items-center justify-center rounded text-base-content/40 hover:text-base-content hover:bg-base-300 transition-colors"
+            title="Reply"
           >
-            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-              <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
             </svg>
           </button>
-          <%= if @message.id == @selected_message_id do %>
-            <.message_action_menu message={@message} />
+          <%= if @current_user && @message.author_id == @current_user.id do %>
+            <div class="relative">
+              <button
+                phx-click="select_message"
+                phx-value-id={@message.id}
+                class="w-7 h-7 flex items-center justify-center rounded text-base-content/40 hover:text-base-content hover:bg-base-300 transition-colors"
+                title="Message options"
+              >
+                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <circle cx="12" cy="5" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+                </svg>
+              </button>
+              <%= if @message.id == @selected_message_id do %>
+                <.message_action_menu message={@message} />
+              <% end %>
+            </div>
           <% end %>
         </div>
       <% end %>
@@ -847,10 +878,36 @@ defmodule BanterWeb.ChatLive.Components do
   attr :channel, :map, required: true
   attr :message_input, :string, required: true
   attr :uploads, :map, required: true
+  attr :replying_to, :map, default: nil
 
   def message_input(assigns) do
     ~H"""
     <div class="px-4 pb-6 flex-shrink-0">
+      <%!-- Replying-to banner --%>
+      <%= if @replying_to do %>
+        <div class="flex items-center justify-between bg-neutral/60 rounded-t-lg px-3 py-1.5 border-b border-base-300 -mb-1">
+          <div class="flex items-center gap-1.5 text-xs text-base-content/60">
+            <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+            </svg>
+            Replying to
+            <span class="font-semibold text-primary"><%= author_name(@replying_to) %></span>
+            <span class="truncate max-w-[200px] opacity-60">
+              <%= String.slice(@replying_to.content || "", 0, 60) %>
+            </span>
+          </div>
+          <button
+            type="button"
+            phx-click="cancel_reply"
+            class="text-base-content/40 hover:text-base-content transition-colors ml-2"
+            title="Cancel reply"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      <% end %>
       <%!-- File upload preview area --%>
       <%= if @uploads.attachments.entries != [] do %>
         <div class="mb-2 bg-neutral rounded-lg p-3">
@@ -1235,6 +1292,23 @@ defmodule BanterWeb.ChatLive.Components do
         </div>
       <% end %>
     </a>
+    """
+  end
+
+  attr :message, :map, required: true
+
+  defp reply_quote(assigns) do
+    ~H"""
+    <%= if is_struct(@message.reply_to, Banter.Chat.Message) do %>
+      <div class="mb-1.5 flex items-start gap-1.5 pl-2 border-l-2 border-primary/40 text-xs opacity-70 hover:opacity-100 transition-opacity cursor-default">
+        <span class="font-semibold text-primary/90 flex-shrink-0"><%= author_name(@message.reply_to) %></span>
+        <span class="text-base-content/60 truncate">
+          <%= if @message.reply_to.content && @message.reply_to.content != "",
+            do: String.slice(@message.reply_to.content, 0, 100),
+            else: "[attachment]" %>
+        </span>
+      </div>
+    <% end %>
     """
   end
 

@@ -75,6 +75,7 @@ defmodule BanterWeb.ChatLive do
       |> assign(:editing_content, "")
       |> assign(:confirming_delete_id, nil)
       |> assign(:selected_message_id, nil)
+      |> assign(:replying_to, nil)
       |> allow_upload(:attachments,
         accept: ~w(.jpg .jpeg .png .gif .webp .svg),
         max_entries: 10,
@@ -219,16 +220,19 @@ defmodule BanterWeb.ChatLive do
           end
         end)
 
+      reply_to_id = socket.assigns.replying_to && socket.assigns.replying_to.id
+
       # Send message with attachment data
       case GuildServer.send_message_with_attachments(
              socket.assigns.current_server.id,
              socket.assigns.current_channel.id,
              socket.assigns.current_user.id,
              content,
-             attachment_data
+             attachment_data,
+             reply_to_id: reply_to_id
            ) do
         {:ok, _message} ->
-          {:noreply, assign(socket, :message_input, "")}
+          {:noreply, socket |> assign(:message_input, "") |> assign(:replying_to, nil)}
 
         {:error, _} ->
           {:noreply, put_flash(socket, :error, "Failed to send message")}
@@ -350,7 +354,7 @@ defmodule BanterWeb.ChatLive do
       has_more = length(msgs) > 50
       msgs = Enum.take(msgs, 50)
       new_cursor = if msgs != [], do: List.last(msgs).id, else: nil
-      older_messages = Ash.load!(Enum.reverse(msgs), [:author, :attachments])
+      older_messages = Ash.load!(Enum.reverse(msgs), [:author, :attachments, reply_to: [:author]])
 
       socket =
         socket
@@ -497,6 +501,26 @@ defmodule BanterWeb.ChatLive do
     end
   end
 
+  # ── Reply Events ────────────────────────────────────────────────────
+
+  def handle_event("start_reply", %{"id" => msg_id}, socket) do
+    message = Enum.find(socket.assigns.messages, &(&1.id == msg_id))
+
+    if message do
+      {:noreply,
+       socket
+       |> assign(:replying_to, message)
+       |> assign(:editing_message_id, nil)
+       |> assign(:selected_message_id, nil)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("cancel_reply", _, socket) do
+    {:noreply, assign(socket, :replying_to, nil)}
+  end
+
   # ── Voice Events ────────────────────────────────────────────────────
 
   def handle_event("join_voice_channel", %{"id" => channel_id}, socket) do
@@ -627,7 +651,7 @@ defmodule BanterWeb.ChatLive do
     # Only add message if it's for the current channel
     if socket.assigns.current_channel && message.channel_id == socket.assigns.current_channel.id do
       # Load author and attachments for display
-      {:ok, message} = Ash.load(message, [:author, :attachments])
+      {:ok, message} = Ash.load(message, [:author, :attachments, reply_to: [:author]])
 
       socket =
         socket
@@ -902,7 +926,7 @@ defmodule BanterWeb.ChatLive do
         has_more = length(msgs) > 50
         msgs = Enum.take(msgs, 50)
         cursor = if msgs != [], do: List.last(msgs).id, else: nil
-        messages = Ash.load!(Enum.reverse(msgs), [:author, :attachments])
+        messages = Ash.load!(Enum.reverse(msgs), [:author, :attachments, reply_to: [:author]])
 
         socket
         |> assign(:current_channel, channel)
@@ -978,6 +1002,7 @@ defmodule BanterWeb.ChatLive do
         editing_content={@editing_content}
         confirming_delete_id={@confirming_delete_id}
         selected_message_id={@selected_message_id}
+        replying_to={@replying_to}
       />
 
       <Components.members_sidebar

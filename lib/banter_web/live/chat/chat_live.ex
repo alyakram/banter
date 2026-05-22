@@ -71,6 +71,10 @@ defmodule BanterWeb.ChatLive do
       |> assign(:voice_deafened, false)
       |> assign(:voice_peer_pid, nil)
       |> assign(:show_mobile_sidebar, false)
+      |> assign(:editing_message_id, nil)
+      |> assign(:editing_content, "")
+      |> assign(:confirming_delete_id, nil)
+      |> assign(:selected_message_id, nil)
       |> allow_upload(:attachments,
         accept: ~w(.jpg .jpeg .png .gif .webp .svg),
         max_entries: 10,
@@ -404,6 +408,95 @@ defmodule BanterWeb.ChatLive do
     end
   end
 
+  # ── Edit / Delete Events ────────────────────────────────────────────
+
+  def handle_event("select_message", %{"id" => id}, socket) do
+    current = socket.assigns.selected_message_id
+    new_id = if current == id, do: nil, else: id
+    {:noreply, socket |> assign(:selected_message_id, new_id) |> assign(:confirming_delete_id, nil)}
+  end
+
+  def handle_event("deselect_message", _, socket) do
+    {:noreply, assign(socket, :selected_message_id, nil)}
+  end
+
+  def handle_event("start_edit", %{"id" => msg_id}, socket) do
+    message = Enum.find(socket.assigns.messages, &(&1.id == msg_id))
+
+    if message && message.author_id == socket.assigns.current_user.id do
+      {:noreply,
+       socket
+       |> assign(:editing_message_id, msg_id)
+       |> assign(:editing_content, message.content || "")
+       |> assign(:selected_message_id, nil)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("update_edit", params, socket) do
+    {:noreply, assign(socket, :editing_content, params["content"] || "")}
+  end
+
+  def handle_event("save_edit", %{"message_id" => msg_id, "content" => content}, socket) do
+    content = String.trim(content)
+
+    if content == "" do
+      {:noreply, socket}
+    else
+      case GuildServer.edit_message(
+             socket.assigns.current_server.id,
+             msg_id,
+             content,
+             socket.assigns.current_user
+           ) do
+        {:ok, _} ->
+          {:noreply, socket |> assign(:editing_message_id, nil) |> assign(:editing_content, "")}
+
+        {:error, %Ash.Error.Forbidden{}} ->
+          {:noreply, put_flash(socket, :error, "Not authorized to edit this message")}
+
+        {:error, _} ->
+          {:noreply, put_flash(socket, :error, "Failed to edit message")}
+      end
+    end
+  end
+
+  def handle_event("cancel_edit", _, socket) do
+    {:noreply, socket |> assign(:editing_message_id, nil) |> assign(:editing_content, "")}
+  end
+
+  def handle_event("confirm_delete", %{"id" => msg_id}, socket) do
+    {:noreply, socket |> assign(:confirming_delete_id, msg_id) |> assign(:selected_message_id, nil)}
+  end
+
+  def handle_event("cancel_delete", _, socket) do
+    {:noreply, assign(socket, :confirming_delete_id, nil)}
+  end
+
+  def handle_event("delete_message", %{"id" => msg_id}, socket) do
+    case GuildServer.delete_message(
+           socket.assigns.current_server.id,
+           msg_id,
+           socket.assigns.current_user
+         ) do
+      :ok ->
+        {:noreply, assign(socket, :confirming_delete_id, nil)}
+
+      {:error, %Ash.Error.Forbidden{}} ->
+        {:noreply,
+         socket
+         |> assign(:confirming_delete_id, nil)
+         |> put_flash(:error, "Not authorized to delete this message")}
+
+      {:error, _} ->
+        {:noreply,
+         socket
+         |> assign(:confirming_delete_id, nil)
+         |> put_flash(:error, "Failed to delete message")}
+    end
+  end
+
   # ── Voice Events ────────────────────────────────────────────────────
 
   def handle_event("join_voice_channel", %{"id" => channel_id}, socket) do
@@ -544,6 +637,28 @@ defmodule BanterWeb.ChatLive do
     else
       {:noreply, socket}
     end
+  end
+
+  @impl true
+  def handle_info({:guild_event, {:message_update, message}}, socket) do
+    if socket.assigns.current_channel && message.channel_id == socket.assigns.current_channel.id do
+      socket =
+        update(socket, :messages, fn msgs ->
+          Enum.map(msgs, &if(&1.id == message.id, do: message, else: &1))
+        end)
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_info({:guild_event, {:message_delete, message_id}}, socket) do
+    socket =
+      update(socket, :messages, fn msgs -> Enum.reject(msgs, &(&1.id == message_id)) end)
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -858,6 +973,11 @@ defmodule BanterWeb.ChatLive do
         uploads={@uploads}
         has_more_messages={@has_more_messages}
         loading_more_messages={@loading_more_messages}
+        current_user={@current_user}
+        editing_message_id={@editing_message_id}
+        editing_content={@editing_content}
+        confirming_delete_id={@confirming_delete_id}
+        selected_message_id={@selected_message_id}
       />
 
       <Components.members_sidebar

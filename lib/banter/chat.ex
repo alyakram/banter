@@ -75,7 +75,7 @@ defmodule Banter.Chat do
   Creates a message in a channel.
   Alias for send_message for clarity.
   """
-  def create_message(attrs), do: send_message(attrs)
+  def create_message(attrs, opts \\ []), do: send_message(attrs, opts)
 
   @doc """
   Lists all channels for a given server.

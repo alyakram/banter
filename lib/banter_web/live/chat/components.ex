@@ -89,6 +89,7 @@ defmodule BanterWeb.ChatLive.Components do
   @doc """
   Channel sidebar component - middle panel with channels list and user info.
   """
+  attr :servers, :list, default: []
   attr :current_server, :map, default: nil
   attr :channels, :list, default: []
   attr :current_channel, :map, default: nil
@@ -110,6 +111,46 @@ defmodule BanterWeb.ChatLive.Components do
         else: "hidden"
       )
     ]}>
+      <%!-- Mobile-only: server picker row (server_rail is hidden on mobile) --%>
+      <div class="lg:hidden flex-shrink-0 border-b border-base-300 py-2 px-2">
+        <div class="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
+          <%= for server <- @servers do %>
+            <button
+              phx-click="select_server"
+              phx-value-id={server.id}
+              class={[
+                "w-10 h-10 flex-shrink-0 text-xs font-bold transition-all duration-150",
+                if(@current_server && @current_server.id == server.id,
+                  do: "rounded-xl bg-primary text-primary-content ring-2 ring-primary ring-offset-1 ring-offset-base-200",
+                  else: "rounded-full bg-neutral text-neutral-content hover:rounded-xl hover:bg-primary hover:text-primary-content"
+                )
+              ]}
+              title={server.name}
+            >
+              <%= server_initials(server.name) %>
+            </button>
+          <% end %>
+          <button
+            phx-click="toggle_join_server_modal"
+            class="w-10 h-10 flex-shrink-0 rounded-full bg-neutral text-primary hover:rounded-xl hover:bg-primary hover:text-primary-content transition-all duration-150 flex items-center justify-center"
+            title="Join a server"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
+            </svg>
+          </button>
+          <button
+            phx-click="toggle_create_server_modal"
+            class="w-10 h-10 flex-shrink-0 rounded-full bg-neutral text-success hover:rounded-xl hover:bg-success hover:text-white transition-all duration-150 flex items-center justify-center"
+            title="Create a server"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
       <%= if @current_server do %>
         <.server_header server={@current_server} />
         <.channel_list
@@ -146,11 +187,14 @@ defmodule BanterWeb.ChatLive.Components do
     <div class="h-12 px-4 flex items-center justify-between border-b border-base-300 shadow-sm">
       <h2 class="font-semibold text-white text-[15px] truncate"><%= @server.name %></h2>
       <button
+        id="invite-code-btn"
         phx-click={JS.dispatch("phx:copy", detail: %{text: @server.invite_code})}
-        title={"Invite code: #{@server.invite_code} (click to copy)"}
-        class="text-[11px] bg-neutral text-base-content/50 hover:text-white px-2 py-1 rounded transition-colors"
+        title={"Click to copy invite code: #{@server.invite_code}"}
+        class="text-[11px] bg-neutral text-base-content/50 hover:text-primary-content hover:bg-primary px-2 py-1 rounded transition-colors cursor-pointer select-none"
       >
-        📋 <%= @server.invite_code %>
+        <span id="invite-code-label">
+          📋 <%= @server.invite_code %>
+        </span>
       </button>
     </div>
     """

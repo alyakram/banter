@@ -1,0 +1,50 @@
+<svg width="100%" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>Ghost gaming chat logo</title>
+  <desc>A smiling white ghost wearing a green headset and using a green game controller, on a green background, two colors only.</desc>
+
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="#16A34A"/>
+
+  <g transform="translate(256 262) scale(1.3) translate(-256 -270)">
+    <!-- GHOST -->
+    <path d="M 150 250
+             A 106 106 0 0 1 362 250
+             L 362 360
+             Q 335 396 309 360
+             Q 282 396 256 360
+             Q 229 396 203 360
+             Q 176 396 150 360
+             Z" fill="#FFFFFF"/>
+
+    <!-- CONTROLLER -->
+    <path d="M 206 300
+             Q 256 292 306 300
+             Q 318 304 320 326
+             Q 322 352 300 354
+             Q 282 356 272 340
+             Q 256 330 240 340
+             Q 230 356 212 354
+             Q 190 352 192 326
+             Q 194 304 206 300 Z" fill="#16A34A"/>
+
+    <!-- EYES -->
+    <ellipse cx="228" cy="232" rx="15" ry="21" fill="#16A34A"/>
+    <ellipse cx="284" cy="232" rx="15" ry="21" fill="#16A34A"/>
+
+    <!-- SMILE -->
+    <path d="M 234 267 Q 256 287 278 267"
+          fill="none" stroke="#16A34A" stroke-width="8" stroke-linecap="round"/>
+
+    <!-- HEADSET BAND -->
+    <path d="M 174 208 C 196 150 316 150 338 208"
+          fill="none" stroke="#16A34A" stroke-width="14" stroke-linecap="round"/>
+
+    <!-- EAR MUFFS -->
+    <rect x="156" y="205" width="36" height="54" rx="15" fill="#16A34A"/>
+    <rect x="320" y="205" width="36" height="54" rx="15" fill="#16A34A"/>
+
+    <!-- BOOM MIC -->
+    <path d="M 174 259 Q 190 284 214 286"
+          fill="none" stroke="#16A34A" stroke-width="9" stroke-linecap="round"/>
+    <rect x="206" y="278" width="22" height="15" rx="7" fill="#16A34A"/>
+  </g>
+</svg>

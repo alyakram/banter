@@ -227,6 +227,11 @@ defmodule Banter.Accounts.User do
       description "Update user's availability status (online, away, dnd, invisible)"
       accept [:availability]
     end
+
+    update :update_avatar do
+      description "Update user's avatar"
+      accept [:avatar_url]
+    end
   end
 
   policies do
@@ -239,6 +244,10 @@ defmodule Banter.Accounts.User do
     end
 
     policy action(:update_availability) do
+      authorize_if expr(id == ^actor(:id))
+    end
+
+    policy action(:update_avatar) do
       authorize_if expr(id == ^actor(:id))
     end
   end
@@ -264,6 +273,11 @@ defmodule Banter.Accounts.User do
       default :online
       description "User's availability status"
       constraints one_of: [:online, :away, :dnd, :invisible]
+    end
+
+    attribute :avatar_url, :string do
+      allow_nil? true
+      public? true
     end
   end
 

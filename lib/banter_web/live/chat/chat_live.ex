@@ -77,6 +77,7 @@ defmodule BanterWeb.ChatLive do
       |> assign(:selected_message_id, nil)
       |> assign(:replying_to, nil)
       |> assign(:typing_users, %{})
+      |> assign(:show_avatar_picker, false)
       |> allow_upload(:attachments,
         accept: ~w(.jpg .jpeg .png .gif .webp .svg),
         max_entries: 10,
@@ -383,6 +384,33 @@ defmodule BanterWeb.ChatLive do
 
   def handle_event("toggle_status_menu", _, socket) do
     {:noreply, assign(socket, :show_status_menu, !socket.assigns.show_status_menu)}
+  end
+
+  def handle_event("toggle_avatar_picker", _, socket) do
+    {:noreply, assign(socket, :show_avatar_picker, !socket.assigns.show_avatar_picker)}
+  end
+
+  def handle_event("select_avatar", %{"url" => url}, socket) do
+    user = socket.assigns.current_user
+
+    case user
+         |> Ash.Changeset.for_update(:update_avatar, %{avatar_url: url})
+         |> Ash.update(actor: user) do
+      {:ok, updated_user} ->
+        Phoenix.PubSub.broadcast(
+          Banter.PubSub,
+          "users:online",
+          {:user_avatar_updated, user.id, url}
+        )
+
+        {:noreply,
+         socket
+         |> assign(:current_user, updated_user)
+         |> assign(:show_avatar_picker, false)}
+
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "Failed to update avatar")}
+    end
   end
 
   def handle_event("change_status", %{"status" => status_str}, socket) do
@@ -823,6 +851,44 @@ defmodule BanterWeb.ChatLive do
   end
 
   @impl true
+  def handle_info({:user_avatar_updated, user_id, url}, socket) do
+    socket =
+      socket
+      |> update(:messages, fn msgs ->
+        Enum.map(msgs, fn msg ->
+          msg
+          |> patch_author_avatar(user_id, url)
+          |> patch_reply_to_author_avatar(user_id, url)
+        end)
+      end)
+      |> update(:members, fn members ->
+        Enum.map(members, fn member ->
+          if member.user_id == user_id && member.user do
+            %{member | user: %{member.user | avatar_url: url}}
+          else
+            member
+          end
+        end)
+      end)
+      |> update(:voice_states, fn states ->
+        Map.new(states, fn {ch_id, users} ->
+          patched =
+            Enum.map(users, fn vs ->
+              if vs.user_id == user_id && vs.user do
+                %{vs | user: %{vs.user | avatar_url: url}}
+              else
+                vs
+              end
+            end)
+
+          {ch_id, patched}
+        end)
+      end)
+
+    {:noreply, socket}
+  end
+
+  @impl true
   def handle_info({:guild_event, {:typing, user_id, name, channel_id}}, socket) do
     current_user_id = socket.assigns[:current_user] && socket.assigns.current_user.id
 
@@ -977,6 +1043,22 @@ defmodule BanterWeb.ChatLive do
     end
   end
 
+  defp patch_author_avatar(%{author_id: uid, author: author} = msg, user_id, url)
+       when uid == user_id and not is_nil(author),
+       do: %{msg | author: %{author | avatar_url: url}}
+
+  defp patch_author_avatar(msg, _user_id, _url), do: msg
+
+  defp patch_reply_to_author_avatar(
+         %{reply_to: %{author_id: uid, author: author} = reply_to} = msg,
+         user_id,
+         url
+       )
+       when uid == user_id and not is_nil(author),
+       do: %{msg | reply_to: %{reply_to | author: %{author | avatar_url: url}}}
+
+  defp patch_reply_to_author_avatar(msg, _user_id, _url), do: msg
+
   defp subscribe_to_channel(socket, _channel_id) do
     server = socket.assigns.current_server
     already_subscribed = socket.assigns[:subscribed_guild_id]
@@ -1014,6 +1096,7 @@ defmodule BanterWeb.ChatLive do
         current_channel={@current_channel}
         current_user={@current_user}
         show_status_menu={@show_status_menu}
+        show_avatar_picker={@show_avatar_picker}
         voice_states={@voice_states}
         current_voice_channel={@current_voice_channel}
         voice_muted={@voice_muted}

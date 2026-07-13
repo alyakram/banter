@@ -38,10 +38,11 @@ defmodule BanterWeb.Presence do
     "users:online"
     |> list()
     |> Enum.filter(fn {_user_id, %{metas: [meta | _]}} ->
-      # Status is already in Presence metadata - no database query!
       Map.get(meta, :status, :online) != :invisible
     end)
-    |> Enum.map(fn {user_id, _} -> user_id end)
+    |> Map.new(fn {user_id, %{metas: [meta | _]}} ->
+      {user_id, Map.get(meta, :status, :online)}
+    end)
   end
 
   @doc """

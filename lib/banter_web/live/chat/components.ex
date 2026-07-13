@@ -15,12 +15,8 @@ defmodule BanterWeb.ChatLive.Components do
   def server_rail(assigns) do
     ~H"""
     <nav class="w-[72px] bg-base-300 hidden lg:flex flex-col items-center py-3 gap-2 flex-shrink-0 overflow-y-auto scrollbar-hide">
-      <%!-- Home / DMs button --%>
-      <button class="w-12 h-12 rounded-2xl bg-primary hover:rounded-xl transition-all duration-200 flex items-center justify-center group">
-        <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M19.73 4.87l-15.46 8.73a.5.5 0 0 0 .01.88l4.09 1.72a1 1 0 0 0 .93-.07l8.8-5.76c.1-.06.21.07.12.15l-7.15 6.77a1 1 0 0 0-.3.7l-.2 4.36a.5.5 0 0 0 .85.37l2.39-2.63a.75.75 0 0 1 .87-.17l4.26 1.85a1 1 0 0 0 1.39-.75l2.78-14.94a.5.5 0 0 0-.68-.56z" />
-        </svg>
-      </button>
+      <%!-- Logo --%>
+      <img src="/images/ghost-gaming-logo.svg" alt="Ghost Gaming" class="w-12 h-12 rounded-2xl hover:rounded-xl transition-all duration-200" />
 
       <div class="w-8 h-0.5 bg-neutral rounded-full my-1"></div>
 
@@ -100,6 +96,7 @@ defmodule BanterWeb.ChatLive.Components do
   attr :voice_muted, :boolean, default: false
   attr :voice_deafened, :boolean, default: false
   attr :show_mobile_sidebar, :boolean, default: false
+  attr :show_avatar_picker, :boolean, default: false
 
   def channel_sidebar(assigns) do
     ~H"""
@@ -167,6 +164,7 @@ defmodule BanterWeb.ChatLive.Components do
         <.user_info_bar
           current_user={@current_user}
           show_status_menu={@show_status_menu}
+          show_avatar_picker={@show_avatar_picker}
         />
       <% else %>
         <div class="flex-1 flex items-center justify-center text-base-content/50 text-sm px-4 text-center">
@@ -338,10 +336,8 @@ defmodule BanterWeb.ChatLive.Components do
   def voice_channel_user(assigns) do
     ~H"""
     <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-base-100 transition-colors">
-      <div class="w-6 h-6 rounded-full bg-primary flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0">
-        <%= if @voice_state.user,
-          do: String.first(@voice_state.user.email |> to_string()) |> String.upcase(),
-          else: "?" %>
+      <div class="w-6 h-6 rounded-full overflow-hidden flex-shrink-0">
+        <.user_avatar user={@voice_state.user} size="w-6 h-6" />
       </div>
       <span class="text-sm text-base-content truncate flex-1">
         <%= if @voice_state.user, do: @voice_state.user.email |> to_string() |> String.split("@") |> List.first(), else: "Unknown" %>
@@ -436,6 +432,7 @@ defmodule BanterWeb.ChatLive.Components do
   """
   attr :current_user, :map, default: nil
   attr :show_status_menu, :boolean, required: true
+  attr :show_avatar_picker, :boolean, default: false
 
   def user_info_bar(assigns) do
     ~H"""
@@ -453,30 +450,36 @@ defmodule BanterWeb.ChatLive.Components do
         "
         class="p-1.5 rounded text-base-content/50 hover:text-base-content hover:bg-base-100 transition-colors flex-shrink-0"
       >
-        <%!-- Moon: shown in light mode (click to go dark) --%>
         <svg class="w-4 h-4 dark:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
         </svg>
-        <%!-- Sun: shown in dark mode (click to go light) --%>
         <svg class="w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M12 8a4 4 0 100 8 4 4 0 000-8z" />
         </svg>
       </button>
 
+      <%!-- Avatar (clickable → opens picker) --%>
       <div class="relative">
-        <div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-xs font-bold text-white">
-          <%= if @current_user,
-            do: String.first(@current_user.email |> to_string()) |> String.upcase(),
-            else: "?" %>
-        </div>
+        <button
+          phx-click="toggle_avatar_picker"
+          class="relative w-8 h-8 rounded-full overflow-hidden ring-2 ring-transparent hover:ring-primary transition-all"
+          title="Change avatar"
+        >
+          <.user_avatar user={@current_user} size="w-8 h-8" />
+        </button>
         <%= if @current_user do %>
           <% current_status = @current_user.availability || :online %>
           <div class={[
-            "absolute -bottom-0.5 -right-0.5 w-3 h-3 border-2 border-base-300 rounded-full",
+            "absolute -bottom-0.5 -right-0.5 w-3 h-3 border-2 border-base-300 rounded-full pointer-events-none",
             status_color(current_status)
           ]}></div>
         <% end %>
       </div>
+
+      <%!-- Avatar picker popup --%>
+      <%= if @show_avatar_picker do %>
+        <.avatar_picker />
+      <% end %>
       <div class="flex-1 min-w-0">
         <p class="text-sm font-medium text-white truncate">
           <%= if @current_user, do: @current_user.email, else: "Guest" %>
@@ -553,7 +556,7 @@ defmodule BanterWeb.ChatLive.Components do
   attr :current_channel, :map, default: nil
   attr :messages, :list, default: []
   attr :message_input, :string, default: ""
-  attr :online_users, :list, default: []
+  attr :online_users, :map, default: %{}
   attr :uploads, :map, required: true
   attr :has_more_messages, :boolean, default: false
   attr :loading_more_messages, :boolean, default: false
@@ -720,13 +723,16 @@ defmodule BanterWeb.ChatLive.Components do
 
   def message_full(assigns) do
     ~H"""
-    <div class={[
-      "flex gap-3 hover:bg-base-200/50 px-2 py-1 rounded-lg group items-start",
-      if(@show_divider, do: "mt-3")
-    ]}>
+    <div
+      id={"message-#{@message.id}"}
+      class={[
+        "flex gap-3 hover:bg-base-200/50 px-2 py-1 rounded-lg group items-start",
+        if(@show_divider, do: "mt-3")
+      ]}
+    >
       <%!-- Avatar --%>
-      <div class="w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] rounded-full bg-primary flex-none self-start flex items-center justify-center text-sm font-bold text-white mt-0.5">
-        <%= author_initial(@message) %>
+      <div class="w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] rounded-full overflow-hidden flex-none self-start mt-0.5">
+        <.user_avatar user={@message.author} size="w-9 h-9" />
       </div>
 
       <%!-- Content --%>
@@ -759,7 +765,7 @@ defmodule BanterWeb.ChatLive.Components do
 
       <%!-- Action buttons: reply (all) + ⋮ (own only) --%>
       <%= if @message.id != @editing_message_id do %>
-        <div class="flex-shrink-0 self-start mt-0.5 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div class="flex-shrink-0 self-start mt-0.5 flex items-center gap-0.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
           <button
             phx-click="start_reply"
             phx-value-id={@message.id}
@@ -805,7 +811,7 @@ defmodule BanterWeb.ChatLive.Components do
 
   def message_compact(assigns) do
     ~H"""
-    <div class="flex gap-3 hover:bg-base-200/50 px-2 py-0.5 rounded-lg group items-start">
+    <div id={"message-#{@message.id}"} class="flex gap-3 hover:bg-base-200/50 px-2 py-0.5 rounded-lg group items-start">
       <div class="w-9 flex-shrink-0 flex justify-center pt-1.5">
         <span class="text-[10px] text-base-content/40 opacity-0 group-hover:opacity-100 transition-opacity">
           <%= Calendar.strftime(@message.inserted_at, "%H:%M") %>
@@ -839,7 +845,7 @@ defmodule BanterWeb.ChatLive.Components do
 
       <%!-- Action buttons: reply (all) + ⋮ (own only) --%>
       <%= if @message.id != @editing_message_id do %>
-        <div class="flex-shrink-0 self-start flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div class="flex-shrink-0 self-start flex items-center gap-0.5 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
           <button
             phx-click="start_reply"
             phx-value-id={@message.id}
@@ -984,7 +990,7 @@ defmodule BanterWeb.ChatLive.Components do
   """
   attr :current_server, :map, default: nil
   attr :members, :list, default: []
-  attr :online_users, :list, default: []
+  attr :online_users, :map, default: %{}
 
   def members_sidebar(assigns) do
     ~H"""
@@ -1005,7 +1011,7 @@ defmodule BanterWeb.ChatLive.Components do
   Individual member item.
   """
   attr :member, :map, required: true
-  attr :online_users, :list, required: true
+  attr :online_users, :map, required: true
 
   def member_item(assigns) do
     assigns = assign(assigns, :status, user_status(assigns.member.user_id, assigns.online_users))
@@ -1013,10 +1019,8 @@ defmodule BanterWeb.ChatLive.Components do
     ~H"""
     <div class="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-base-100 transition-colors cursor-pointer">
       <div class="relative">
-        <div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-xs font-bold text-white">
-          <%= if @member.user,
-            do: String.first(@member.user.email |> to_string()) |> String.upcase(),
-            else: "?" %>
+        <div class="w-8 h-8 rounded-full overflow-hidden">
+          <.user_avatar user={@member.user} size="w-8 h-8" />
         </div>
         <div class={[
           "absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 border-2 border-base-200 rounded-full",
@@ -1311,12 +1315,71 @@ defmodule BanterWeb.ChatLive.Components do
     """
   end
 
+  attr :user, :map, default: nil
+  attr :size, :string, default: "w-8 h-8"
+
+  defp user_avatar(assigns) do
+    ~H"""
+    <%= if @user && @user.avatar_url do %>
+      <img src={@user.avatar_url} alt="avatar" class={[@size, "object-cover"]} />
+    <% else %>
+      <div class={[@size, "bg-primary flex items-center justify-center text-xs font-bold text-white"]}>
+        <%= if @user,
+          do: @user.email |> to_string() |> String.first() |> String.upcase(),
+          else: "?" %>
+      </div>
+    <% end %>
+    """
+  end
+
+  defp avatar_picker(assigns) do
+    styles = [
+      {"Adventurer", "adventurer"},
+      {"Robots", "bottts-neutral"},
+      {"Emoji", "fun-emoji"},
+      {"Pixel Art", "pixel-art"}
+    ]
+
+    seeds = ~w(Abby Bear Charlie Daisy Echo Felix Grace Hunter)
+
+    avatars =
+      for {_label, style} <- styles, seed <- seeds do
+        "/images/avatars/#{style}-#{seed}.svg"
+      end
+
+    assigns = assign(assigns, :avatars, avatars) |> assign(:styles, styles) |> assign(:seeds, seeds)
+
+    ~H"""
+    <div
+      class="absolute bottom-full left-0 mb-2 w-72 bg-base-300 border border-neutral rounded-xl shadow-2xl z-50 p-3"
+      phx-click-away="toggle_avatar_picker"
+    >
+      <p class="text-[11px] font-bold uppercase tracking-wide text-base-content/50 mb-2">Choose Avatar</p>
+      <div class="grid grid-cols-8 gap-1.5">
+        <%= for url <- @avatars do %>
+          <button
+            phx-click="select_avatar"
+            phx-value-url={url}
+            class="w-8 h-8 rounded-full overflow-hidden hover:ring-2 hover:ring-primary transition-all"
+            title={url |> Path.basename() |> Path.rootname()}
+          >
+            <img src={url} alt="avatar" class="w-full h-full object-cover" />
+          </button>
+        <% end %>
+      </div>
+    </div>
+    """
+  end
+
   attr :message, :map, required: true
 
   defp reply_quote(assigns) do
     ~H"""
     <%= if is_struct(@message.reply_to, Banter.Chat.Message) do %>
-      <div class="mb-1.5 flex items-start gap-1.5 pl-2 border-l-2 border-primary/40 text-xs opacity-70 hover:opacity-100 transition-opacity cursor-default">
+      <div
+        class="mb-1.5 flex items-start gap-1.5 pl-2 border-l-2 border-primary/40 text-xs opacity-70 hover:opacity-100 transition-opacity cursor-pointer"
+        onclick={"var el=document.getElementById('message-#{@message.reply_to.id}');if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.outline='2px solid oklch(var(--p)/0.5)';el.style.borderRadius='8px';setTimeout(function(){el.style.outline='';el.style.borderRadius=''},1500)}"}
+      >
         <span class="font-semibold text-primary/90 flex-shrink-0"><%= author_name(@message.reply_to) %></span>
         <span class="text-base-content/60 truncate">
           <%= if @message.reply_to.content && @message.reply_to.content != "",
@@ -1460,16 +1523,9 @@ defmodule BanterWeb.ChatLive.Components do
   end
 
   defp user_status(user_id, online_users) do
-    # Check if user is online first
-    if user_id in online_users do
-      # OPTIMIZED: Get status from Presence metadata (no database query!)
-      # Presence metadata is kept in sync by ChatLive.handle_event("change_status")
-      case BanterWeb.Presence.get_user_presence(user_id) do
-        {:ok, %{status: status}} -> status
-        _ -> :online
-      end
-    else
-      :offline
+    case Map.get(online_users, user_id) do
+      nil -> :offline
+      status -> status
     end
   end
 

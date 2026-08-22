@@ -12,8 +12,9 @@ defmodule BanterWeb.GatewayChannel do
   ## Connection Flow:
   1. Client connects to "gateway:connect"
   2. Server starts Session GenServer, sends HELLO with heartbeat_interval
-  3. Client sends IDENTIFY with user_id and guilds
-  4. Server sends READY event
+  3. Client sends IDENTIFY with a signed auth token and requested guilds
+  4. Server verifies the token, sends READY event with the guilds the user
+     actually belongs to
   5. Client begins sending HEARTBEAT at intervals
   6. Server dispatches events (MESSAGE_CREATE, etc.)
   """
@@ -86,34 +87,34 @@ defmodule BanterWeb.GatewayChannel do
   # Opcode Handlers
 
   defp handle_opcode(:identify, data, socket) do
-    %{"user_id" => user_id, "guilds" => guild_ids} = data
+    %{"token" => token, "guilds" => guild_ids} = data
     session_id = socket.assigns.session_id
 
-    Logger.info("Gateway processing IDENTIFY for session #{session_id}, user_id=#{user_id}, guilds=#{inspect(guild_ids)}")
+    Logger.info("Gateway processing IDENTIFY for session #{session_id}")
 
-    case Session.identify(session_id, user_id, guild_ids) do
+    case Session.identify(session_id, token, guild_ids) do
       :ok ->
         Logger.info("✓ Session #{session_id} successfully identified")
         socket = assign(socket, :authenticated, true)
         {:noreply, socket}
 
       {:error, reason} ->
-        Logger.error("✗ IDENTIFY failed for session #{session_id}: #{inspect(reason)}")
+        Logger.warning("✗ IDENTIFY failed for session #{session_id}: #{inspect(reason)}")
         {:reply, {:error, %{reason: "identify failed"}}, socket}
     end
   end
 
   defp handle_opcode(:resume, data, socket) do
-    %{"user_id" => user_id, "seq" => sequence} = data
+    %{"token" => token, "seq" => sequence} = data
     session_id = socket.assigns.session_id
 
-    case Session.resume(session_id, user_id, sequence) do
+    case Session.resume(session_id, token, sequence) do
       {:ok, _seq} ->
         socket = assign(socket, :authenticated, true)
         {:noreply, socket}
 
       {:error, reason} ->
-        Logger.error("RESUME failed: #{inspect(reason)}")
+        Logger.warning("RESUME failed for session #{session_id}: #{inspect(reason)}")
         {:reply, {:error, %{reason: "resume failed"}}, socket}
     end
   end

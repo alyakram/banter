@@ -79,7 +79,7 @@
             <button onclick="connect()">Connect</button>
             <button onclick="disconnect()">Disconnect</button>
             <br><br>
-            <input type="text" id="userId" placeholder="User ID (e.g., user_123)" value="user_123">
+            <input type="text" id="authToken" placeholder="Auth token (JWT from sign-in)" value="">
             <input type="text" id="guildIds" placeholder="Guild IDs (comma separated)" value="">
             <button onclick="identify()">Send IDENTIFY</button>
             <br><br>
@@ -237,12 +237,12 @@
         }
 
         function identify() {
-            const userId = document.getElementById('userId').value;
+            const token = document.getElementById('authToken').value;
             const guildIdsStr = document.getElementById('guildIds').value;
             const guildIds = guildIdsStr ? guildIdsStr.split(',').map(s => s.trim()) : [];
 
             send(2, { // IDENTIFY opcode
-                user_id: userId,
+                token: token,
                 guilds: guildIds
             });
         }

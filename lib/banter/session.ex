@@ -23,9 +23,8 @@ defmodule Banter.Session do
   use GenServer
   require Logger
 
-  alias Banter.Gateway
+  alias Banter.{Chat, Gateway}
   alias BanterWeb.Presence
-  alias Banter.Accounts
 
   @heartbeat_interval 45_000  # 45 seconds
   @heartbeat_timeout 60_000   # 60 seconds (allow some grace period)
@@ -76,16 +75,20 @@ defmodule Banter.Session do
 
   @doc """
   Handles IDENTIFY payload from client.
+
+  `token` must be a valid AshAuthentication JWT for the identifying user.
   """
-  def identify(session_id, user_id, guild_ids \\ []) do
-    GenServer.call(via_tuple(session_id), {:identify, user_id, guild_ids})
+  def identify(session_id, token, guild_ids \\ []) do
+    GenServer.call(via_tuple(session_id), {:identify, token, guild_ids})
   end
 
   @doc """
   Handles RESUME payload from client.
+
+  `token` must be a valid AshAuthentication JWT for the resuming user.
   """
-  def resume(session_id, user_id, sequence) do
-    GenServer.call(via_tuple(session_id), {:resume, user_id, sequence})
+  def resume(session_id, token, sequence) do
+    GenServer.call(via_tuple(session_id), {:resume, token, sequence})
   end
 
   @doc """
@@ -130,61 +133,74 @@ defmodule Banter.Session do
   end
 
   @impl true
-  def handle_call({:identify, user_id, guild_ids}, _from, state) do
+  def handle_call({:identify, token, guild_ids}, _from, state) do
     if state.state == :waiting_identify do
-      Logger.info("Session #{state.session_id} identified as user_id=#{user_id}")
+      case verify_token(token) do
+        {:ok, user} ->
+          user_id = user.id
+          Logger.info("Session #{state.session_id} identified as user_id=#{user_id}")
 
-      # Get user's availability status
-      user_status = get_user_availability(user_id)
+          # Only subscribe to guilds the user is actually a member of,
+          # regardless of what the client requested
+          authorized_guild_ids = member_guild_ids(user_id, guild_ids)
 
-      # Track user presence
-      {:ok, _} = Presence.track(
-        state.channel_pid,
-        "users:online",
-        user_id,
-        %{
-          online_at: System.system_time(:second),
-          status: user_status,
-          session_id: state.session_id
-        }
-      )
+          # Get user's availability status
+          user_status = user.availability || :online
 
-      Logger.debug("Tracking presence for user #{user_id} with status #{user_status}")
+          # Track user presence
+          {:ok, _} = Presence.track(
+            state.channel_pid,
+            "users:online",
+            user_id,
+            %{
+              online_at: System.system_time(:second),
+              status: user_status,
+              session_id: state.session_id
+            }
+          )
 
-      # Subscribe to guilds
-      new_subscriptions =
-        Enum.reduce(guild_ids, state.guild_subscriptions, fn guild_id, acc ->
-          Phoenix.PubSub.subscribe(Banter.PubSub, "guild:#{guild_id}")
-          MapSet.put(acc, guild_id)
-        end)
+          Logger.debug("Tracking presence for user #{user_id} with status #{user_status}")
 
-      # Send READY event
-      ready_data = %{
-        user_id: user_id,
-        session_id: state.session_id,
-        guilds: guild_ids
-      }
+          # Subscribe to authorized guilds
+          new_subscriptions =
+            Enum.reduce(authorized_guild_ids, state.guild_subscriptions, fn guild_id, acc ->
+              Phoenix.PubSub.subscribe(Banter.PubSub, "guild:#{guild_id}")
+              MapSet.put(acc, guild_id)
+            end)
 
-      new_state = %{
-        state |
-        user_id: user_id,
-        state: :identified,
-        guild_subscriptions: new_subscriptions,
-        sequence: state.sequence + 1
-      }
+          # Send READY event
+          ready_data = %{
+            user_id: user_id,
+            session_id: state.session_id,
+            guilds: authorized_guild_ids
+          }
 
-      dispatch(new_state, Gateway.event_ready(), ready_data)
+          new_state = %{
+            state |
+            user_id: user_id,
+            state: :identified,
+            guild_subscriptions: new_subscriptions,
+            sequence: state.sequence + 1
+          }
 
-      {:reply, :ok, new_state}
+          dispatch(new_state, Gateway.event_ready(), ready_data)
+
+          {:reply, :ok, new_state}
+
+        {:error, reason} ->
+          Logger.warning("Session #{state.session_id} IDENTIFY rejected: #{inspect(reason)}")
+          {:reply, {:error, :authentication_failed}, state}
+      end
     else
       {:reply, {:error, :already_identified}, state}
     end
   end
 
   @impl true
-  def handle_call({:resume, user_id, sequence}, _from, state) do
-    if state.state == :zombie && state.user_id == user_id do
-      Logger.info("Session #{state.session_id} resumed for user_id=#{user_id}")
+  def handle_call({:resume, token, sequence}, _from, state) do
+    with {:ok, user} <- verify_token(token),
+         true <- state.state == :zombie && state.user_id == user.id do
+      Logger.info("Session #{state.session_id} resumed for user_id=#{user.id}")
 
       # Cancel zombie timer
       if state.zombie_timer, do: Process.cancel_timer(state.zombie_timer)
@@ -195,9 +211,10 @@ defmodule Banter.Session do
 
       {:reply, {:ok, sequence}, new_state}
     else
-      # Invalid resume attempt
-      send_payload(state.channel_pid, Gateway.invalid_session_payload(false))
-      {:reply, {:error, :invalid_session}, state}
+      _ ->
+        # Invalid resume attempt (bad/mismatched token, or not a zombie session)
+        send_payload(state.channel_pid, Gateway.invalid_session_payload(false))
+        {:reply, {:error, :invalid_session}, state}
     end
   end
 
@@ -389,10 +406,31 @@ defmodule Banter.Session do
     }
   end
 
-  defp get_user_availability(user_id) do
-    case Ash.get(Banter.Accounts.User, user_id) do
-      {:ok, user} -> user.availability || :online
-      _ -> :online
+  defp verify_token(token) when is_binary(token) do
+    case AshAuthentication.Jwt.verify(token, :banter) do
+      {:ok, claims, resource} ->
+        case AshAuthentication.subject_to_user(claims["sub"], resource) do
+          {:ok, user} -> {:ok, user}
+          _ -> {:error, :invalid_token}
+        end
+
+      :error ->
+        {:error, :invalid_token}
+    end
+  end
+
+  defp verify_token(_token), do: {:error, :invalid_token}
+
+  # Regardless of what the client asks to subscribe to, only ever return
+  # guild ids the user is actually a member of.
+  defp member_guild_ids(user_id, requested_guild_ids) do
+    case Chat.list_user_memberships(%{user_id: user_id}) do
+      {:ok, memberships} ->
+        member_server_ids = MapSet.new(memberships, & &1.server_id)
+        Enum.filter(requested_guild_ids, &MapSet.member?(member_server_ids, &1))
+
+      {:error, _} ->
+        []
     end
   end
 end

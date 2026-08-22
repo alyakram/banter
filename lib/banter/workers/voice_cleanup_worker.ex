@@ -22,8 +22,9 @@ defmodule Banter.Workers.VoiceCleanupWorker do
 
   @impl Oban.Worker
   def perform(_job) do
-    # Get all active voice states from DB
-    case Chat.list_all_voice_states() do
+    # Trusted internal sweep, not on behalf of any specific user — bypasses
+    # VoiceState's per-user authorization policy.
+    case Chat.list_all_voice_states(%{}, authorize?: false) do
       {:ok, all_voice_states} ->
         # Get all tracked user IDs from Presence
         tracked_user_ids =
@@ -42,7 +43,7 @@ defmodule Banter.Workers.VoiceCleanupWorker do
         for vs <- stale do
           vs_with_user = Ash.load!(vs, :user)
 
-          case Chat.leave_voice_channel(vs) do
+          case Chat.leave_voice_channel(vs, authorize?: false) do
             :ok ->
               Phoenix.PubSub.broadcast(
                 Banter.PubSub,

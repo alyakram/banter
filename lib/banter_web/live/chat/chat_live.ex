@@ -88,9 +88,11 @@ defmodule BanterWeb.ChatLive do
     # Restore voice WebRTC on connected mount (handles page refresh)
     socket =
       if connected?(socket) && socket.assigns[:current_user] do
-        case Chat.get_user_voice_state(socket.assigns.current_user.id) do
+        user = socket.assigns.current_user
+
+        case Chat.get_user_voice_state(user.id, actor: user) do
           {:ok, voice_state} when not is_nil(voice_state) ->
-            {:ok, channel} = Chat.get_channel(voice_state.channel_id)
+            {:ok, channel} = Chat.get_channel(voice_state.channel_id, actor: user)
 
             socket
             |> assign(:current_voice_channel, channel)
@@ -164,11 +166,12 @@ defmodule BanterWeb.ChatLive do
 
   def handle_event("join_server_by_invite", %{"invite_code" => code}, socket) do
     code = String.trim(code) |> String.upcase()
+    user = socket.assigns.current_user
 
     with {:ok, server} <- Chat.get_server_by_invite(code),
-         {:ok, _member} <- GuildServer.join_guild(server.id, socket.assigns.current_user.id) do
+         {:ok, _member} <- GuildServer.join_guild(server.id, user.id, user) do
       # Find first channel to navigate to
-      {:ok, channels} = Chat.list_server_channels(%{server_id: server.id})
+      {:ok, channels} = Chat.list_server_channels(%{server_id: server.id}, actor: user)
 
       socket =
         socket
@@ -245,16 +248,21 @@ defmodule BanterWeb.ChatLive do
   end
 
   def handle_event("create_server", %{"name" => name}, socket) do
-    case Chat.create_server(%{
-           name: name,
-           owner_id: socket.assigns.current_user.id
-         }) do
-      {:ok, server} ->
-        # Auto-create #general channel
-        {:ok, channel} = Chat.create_channel(%{name: "general", server_id: server.id})
+    user = socket.assigns.current_user
 
-        # Auto-join as owner using GuildServer
-        {:ok, _member} = GuildServer.join_guild(server.id, socket.assigns.current_user.id)
+    case Chat.create_server(%{name: name, owner_id: user.id}, actor: user) do
+      {:ok, server} ->
+        # Auto-create #general channel *before* GuildServer.join_guild below.
+        # GuildServer.join_guild lazily starts the guild process and caches
+        # its channel list at that moment — if it started first, the channel
+        # created here wouldn't be in that cache and message sends would
+        # silently fail. Bypasses Channel's policy: the actor just created
+        # this server, so isn't a member yet, but is unquestionably trusted
+        # to bootstrap its first channel.
+        {:ok, channel} =
+          Chat.create_channel(%{name: "general", server_id: server.id}, authorize?: false)
+
+        {:ok, _member} = GuildServer.join_guild(server.id, user.id, user)
 
         socket =
           socket
@@ -575,11 +583,14 @@ defmodule BanterWeb.ChatLive do
         # Leave current voice channel first if in one
         maybe_leave_current_voice(socket)
 
-        case Chat.join_voice_channel(%{
-               user_id: user.id,
-               channel_id: channel_id,
-               server_id: server.id
-             }) do
+        case Chat.join_voice_channel(
+               %{
+                 user_id: user.id,
+                 channel_id: channel_id,
+                 server_id: server.id
+               },
+               actor: user
+             ) do
           {:ok, voice_state} ->
             voice_state = Ash.load!(voice_state, :user)
 
@@ -607,10 +618,11 @@ defmodule BanterWeb.ChatLive do
 
   def handle_event("toggle_voice_mute", _, socket) do
     new_muted = !socket.assigns.voice_muted
+    user = socket.assigns.current_user
 
-    case Chat.get_user_voice_state(socket.assigns.current_user.id) do
+    case Chat.get_user_voice_state(user.id, actor: user) do
       {:ok, voice_state} when not is_nil(voice_state) ->
-        case Chat.update_voice_state(voice_state, %{self_mute: new_muted}) do
+        case Chat.update_voice_state(voice_state, %{self_mute: new_muted}, actor: user) do
           {:ok, updated_vs} ->
             updated_vs = Ash.load!(updated_vs, :user)
 
@@ -634,10 +646,11 @@ defmodule BanterWeb.ChatLive do
   def handle_event("toggle_voice_deafen", _, socket) do
     new_deafened = !socket.assigns.voice_deafened
     new_muted = if new_deafened, do: true, else: socket.assigns.voice_muted
+    user = socket.assigns.current_user
 
-    case Chat.get_user_voice_state(socket.assigns.current_user.id) do
+    case Chat.get_user_voice_state(user.id, actor: user) do
       {:ok, voice_state} when not is_nil(voice_state) ->
-        case Chat.update_voice_state(voice_state, %{self_deaf: new_deafened, self_mute: new_muted}) do
+        case Chat.update_voice_state(voice_state, %{self_deaf: new_deafened, self_mute: new_muted}, actor: user) do
           {:ok, updated_vs} ->
             updated_vs = Ash.load!(updated_vs, :user)
 
@@ -739,7 +752,9 @@ defmodule BanterWeb.ChatLive do
   def handle_info({:guild_event, {:member_join, _member}}, socket) do
     # Reload members when someone joins
     if socket.assigns.current_server do
-      case Chat.list_server_members(%{server_id: socket.assigns.current_server.id}) do
+      case Chat.list_server_members(%{server_id: socket.assigns.current_server.id},
+             actor: socket.assigns.current_user
+           ) do
         {:ok, members} ->
           members = Ash.load!(members, :user)
           {:noreply, assign(socket, :members, members)}
@@ -932,10 +947,10 @@ defmodule BanterWeb.ChatLive do
   defp maybe_leave_current_voice(socket) do
     user = socket.assigns.current_user
 
-    case Chat.get_user_voice_state(user.id) do
+    case Chat.get_user_voice_state(user.id, actor: user) do
       {:ok, voice_state} when not is_nil(voice_state) ->
         voice_state_with_user = Ash.load!(voice_state, :user)
-        Chat.leave_voice_channel(voice_state)
+        Chat.leave_voice_channel(voice_state, actor: user)
 
         # Leave the Voice.Room (tears down WebRTC pipeline for this user)
         Voice.Room.leave(voice_state.channel_id, user.id)
@@ -975,9 +990,9 @@ defmodule BanterWeb.ChatLive do
   defp load_user_servers(socket) do
     user = socket.assigns.current_user
 
-    case Chat.list_user_memberships(%{user_id: user.id}) do
+    case Chat.list_user_memberships(%{user_id: user.id}, actor: user) do
       {:ok, memberships} ->
-        memberships = Ash.load!(memberships, :server)
+        memberships = Ash.load!(memberships, :server, actor: user)
         servers = Enum.map(memberships, & &1.server)
         assign(socket, :servers, servers)
 
@@ -987,14 +1002,16 @@ defmodule BanterWeb.ChatLive do
   end
 
   defp load_server(socket, server_id) do
-    case Chat.get_server(server_id) do
+    user = socket.assigns.current_user
+
+    case Chat.get_server(server_id, actor: user) do
       {:ok, server} ->
-        {:ok, channels} = Chat.list_server_channels(%{server_id: server_id})
-        {:ok, members} = Chat.list_server_members(%{server_id: server_id})
+        {:ok, channels} = Chat.list_server_channels(%{server_id: server_id}, actor: user)
+        {:ok, members} = Chat.list_server_members(%{server_id: server_id}, actor: user)
         members = Ash.load!(members, :user)
 
         # Load voice states grouped by channel (for display in channel list)
-        voice_states_list = Chat.list_voice_states_for_server(server_id)
+        voice_states_list = Chat.list_voice_states_for_server(server_id, actor: user)
         voice_states_list = Ash.load!(voice_states_list, :user)
         voice_states_map = Enum.group_by(voice_states_list, & &1.channel_id)
 
@@ -1016,7 +1033,7 @@ defmodule BanterWeb.ChatLive do
   end
 
   defp load_channel(socket, channel_id) do
-    case Chat.get_channel(channel_id) do
+    case Chat.get_channel(channel_id, actor: socket.assigns.current_user) do
       {:ok, channel} ->
         {:ok, msgs} = Chat.list_channel_messages(%{channel_id: channel_id})
 

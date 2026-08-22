@@ -11,6 +11,7 @@ defmodule Banter.Chat.Channel do
     otp_app: :banter,
     domain: Banter.Chat,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     extensions: [AshArchival.Resource]
 
   postgres do
@@ -73,6 +74,26 @@ defmodule Banter.Chat.Channel do
   identities do
     # Channel names must be unique within a server
     identity :unique_name_per_server, [:name, :server_id]
+  end
+
+  policies do
+    bypass AshAuthentication.Checks.AshAuthenticationInteraction do
+      authorize_if always()
+    end
+
+    # relationship exprs can't be used to authorize creates (no persisted row
+    # yet to filter against), so creation uses a custom check that resolves
+    # server_id off the changeset directly.
+    policy action_type(:create) do
+      authorize_if Banter.Chat.Checks.ActorIsServerMember
+    end
+
+    # Every other action here is scoped to plain server membership, not role
+    # — role-gated permissions (e.g. admin-only channel management) aren't
+    # built yet; see AUDIT_FINDINGS.md.
+    policy action_type([:read, :update, :destroy]) do
+      authorize_if expr(exists(server.members, user_id == ^actor(:id)))
+    end
   end
 
   actions do

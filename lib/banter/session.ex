@@ -142,7 +142,7 @@ defmodule Banter.Session do
 
           # Only subscribe to guilds the user is actually a member of,
           # regardless of what the client requested
-          authorized_guild_ids = member_guild_ids(user_id, guild_ids)
+          authorized_guild_ids = member_guild_ids(user, guild_ids)
 
           # Get user's availability status
           user_status = user.availability || :online
@@ -423,8 +423,8 @@ defmodule Banter.Session do
 
   # Regardless of what the client asks to subscribe to, only ever return
   # guild ids the user is actually a member of.
-  defp member_guild_ids(user_id, requested_guild_ids) do
-    case Chat.list_user_memberships(%{user_id: user_id}) do
+  defp member_guild_ids(user, requested_guild_ids) do
+    case Chat.list_user_memberships(%{user_id: user.id}, actor: user) do
       {:ok, memberships} ->
         member_server_ids = MapSet.new(memberships, & &1.server_id)
         Enum.filter(requested_guild_ids, &MapSet.member?(member_server_ids, &1))

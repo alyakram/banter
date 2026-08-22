@@ -9,7 +9,8 @@ defmodule Banter.Chat.Member do
   use Ash.Resource,
     otp_app: :banter,
     domain: Banter.Chat,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer]
 
   postgres do
     table "members"
@@ -62,6 +63,30 @@ defmodule Banter.Chat.Member do
   identities do
     # A user can only be a member of a server once
     identity :unique_user_per_server, [:user_id, :server_id]
+  end
+
+  policies do
+    bypass AshAuthentication.Checks.AshAuthenticationInteraction do
+      authorize_if always()
+    end
+
+    policy action_type(:read) do
+      authorize_if expr(exists(server.members, user_id == ^actor(:id)))
+    end
+
+    # Joining a server is always self-service — a user can only ever create
+    # a membership row for themselves, and always with role :member (no
+    # role-management UI exists yet to grant anything higher — see
+    # AUDIT_FINDINGS.md).
+    policy action_type(:create) do
+      authorize_if Banter.Chat.Checks.ActorSelfJoinsAsMember
+    end
+
+    # No role-management UI exists yet (see AUDIT_FINDINGS.md), so update and
+    # leave are both self-only for now.
+    policy action_type([:update, :destroy]) do
+      authorize_if expr(user_id == ^actor(:id))
+    end
   end
 
   actions do

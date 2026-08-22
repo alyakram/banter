@@ -1070,7 +1070,7 @@ Only `Storage` module needs backend abstraction!
 
 ## Related Documentation
 
-- [CLAUDE.md](CLAUDE.md) - Main project guide
+- [CLAUDE.md](../claude.md) - Main project guide
 - [PROJECT_DOCUMENTATION_2026-02-06.md](PROJECT_DOCUMENTATION_2026-02-06.md) - Comprehensive project docs
 - [Phoenix LiveView Uploads](https://hexdocs.pm/phoenix_live_view/uploads.html) - Official upload docs
 - [Ash Framework](https://hexdocs.pm/ash/) - Ash documentation

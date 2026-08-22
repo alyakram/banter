@@ -10,6 +10,7 @@ defmodule Banter.Chat.Server do
     otp_app: :banter,
     domain: Banter.Chat,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     extensions: [AshArchival.Resource, AshPaperTrail.Resource]
 
   postgres do
@@ -71,6 +72,36 @@ defmodule Banter.Chat.Server do
 
   identities do
     identity :unique_invite_code, [:invite_code]
+  end
+
+  policies do
+    bypass AshAuthentication.Checks.AshAuthenticationInteraction do
+      authorize_if always()
+    end
+
+    # Invite codes are the credential — anyone holding one can look up basic
+    # server info before deciding to join, regardless of membership.
+    bypass action(:by_invite_code) do
+      authorize_if always()
+    end
+
+    policy action_type(:read) do
+      authorize_if expr(exists(members, user_id == ^actor(:id)))
+    end
+
+    policy action_type(:create) do
+      # Attributes aren't queryable data yet on a create, so this checks the
+      # :owner_id argument directly rather than the resulting attribute.
+      authorize_if expr(^actor(:id) == ^arg(:owner_id))
+    end
+
+    policy action_type(:update) do
+      authorize_if expr(owner_id == ^actor(:id))
+    end
+
+    policy action_type(:destroy) do
+      authorize_if expr(owner_id == ^actor(:id))
+    end
   end
 
   actions do

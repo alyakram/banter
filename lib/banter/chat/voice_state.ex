@@ -10,7 +10,8 @@ defmodule Banter.Chat.VoiceState do
   use Ash.Resource,
     otp_app: :banter,
     domain: Banter.Chat,
-    data_layer: AshPostgres.DataLayer
+    data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer]
 
   postgres do
     table "voice_states"
@@ -61,6 +62,35 @@ defmodule Banter.Chat.VoiceState do
   identities do
     # A user can only be in one voice channel at a time (globally)
     identity :unique_user_voice, [:user_id]
+  end
+
+  policies do
+    bypass AshAuthentication.Checks.AshAuthenticationInteraction do
+      authorize_if always()
+    end
+
+    policy action_type(:read) do
+      authorize_if expr(exists(server.members, user_id == ^actor(:id)))
+    end
+
+    # Joining voice is always self-service, and only for a server the user
+    # actually belongs to. Two separate policies (both must pass) rather than
+    # one combined expr — attribute/relationship filters can't be used to
+    # authorize creates (no persisted row yet to filter against), so the
+    # membership half uses a custom check that resolves server_id off the
+    # changeset directly.
+    policy action_type(:create) do
+      authorize_if expr(^actor(:id) == ^arg(:user_id))
+    end
+
+    policy action_type(:create) do
+      authorize_if Banter.Chat.Checks.ActorIsServerMember
+    end
+
+    # Mute/deafen toggles and leaving are both self-only.
+    policy action_type([:update, :destroy]) do
+      authorize_if expr(user_id == ^actor(:id))
+    end
   end
 
   actions do

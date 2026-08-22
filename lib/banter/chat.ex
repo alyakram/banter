@@ -79,9 +79,12 @@ defmodule Banter.Chat do
 
   @doc """
   Lists all channels for a given server.
+
+  Only ever called by GuildServer to bootstrap its own internal cache, not on
+  behalf of a specific user's request, so this bypasses authorization.
   """
   def list_channels_for_server(server_id) do
-    case list_server_channels(%{server_id: server_id}) do
+    case list_server_channels(%{server_id: server_id}, authorize?: false) do
       {:ok, channels} -> channels
       {:error, _} -> []
     end
@@ -89,9 +92,12 @@ defmodule Banter.Chat do
 
   @doc """
   Lists all members for a given server.
+
+  Only ever called by GuildServer to bootstrap its own internal cache, not on
+  behalf of a specific user's request, so this bypasses authorization.
   """
   def list_members_for_server(server_id) do
-    case list_server_members(%{server_id: server_id}) do
+    case list_server_members(%{server_id: server_id}, authorize?: false) do
       {:ok, members} -> members
       {:error, _} -> []
     end
@@ -100,8 +106,8 @@ defmodule Banter.Chat do
   @doc """
   Lists all voice states for a given voice channel.
   """
-  def list_voice_states_for_channel(channel_id) do
-    case list_voice_states_by_channel(channel_id) do
+  def list_voice_states_for_channel(channel_id, opts \\ []) do
+    case list_voice_states_by_channel(channel_id, opts) do
       {:ok, states} -> states
       {:error, _} -> []
     end
@@ -110,8 +116,8 @@ defmodule Banter.Chat do
   @doc """
   Lists all voice states in a given server.
   """
-  def list_voice_states_for_server(server_id) do
-    case list_voice_states_by_server(server_id) do
+  def list_voice_states_for_server(server_id, opts \\ []) do
+    case list_voice_states_by_server(server_id, opts) do
       {:ok, states} -> states
       {:error, _} -> []
     end

@@ -77,11 +77,12 @@ defmodule Banter.GuildServer do
   end
 
   @doc """
-  Adds a member to the guild.
+  Adds a member to the guild. `actor` must be the joining user (joining is
+  always self-service — see the Member resource's create policy).
   """
-  def join_guild(server_id, user_id) do
+  def join_guild(server_id, user_id, actor) do
     with {:ok, _pid} <- ensure_started(server_id) do
-      GenServer.call(via_tuple(server_id), {:join_guild, user_id})
+      GenServer.call(via_tuple(server_id), {:join_guild, user_id, actor})
     end
   end
 
@@ -231,12 +232,15 @@ defmodule Banter.GuildServer do
   end
 
   @impl true
-  def handle_call({:join_guild, user_id}, _from, state) do
+  def handle_call({:join_guild, user_id, actor}, _from, state) do
     result =
-      Chat.join_server(%{
-        server_id: state.server_id,
-        user_id: user_id
-      })
+      Chat.join_server(
+        %{
+          server_id: state.server_id,
+          user_id: user_id
+        },
+        actor: actor
+      )
 
     case result do
       {:ok, member} ->
@@ -258,12 +262,17 @@ defmodule Banter.GuildServer do
     with {:ok, _member} <- validate_member(user_id, state) do
       channel_type = Keyword.get(opts, :type, :text)
 
+      # Membership already validated above against the cached member list,
+      # so this bypasses the Channel resource's own policy check.
       result =
-        Chat.create_channel(%{
-          server_id: state.server_id,
-          name: name,
-          type: channel_type
-        })
+        Chat.create_channel(
+          %{
+            server_id: state.server_id,
+            name: name,
+            type: channel_type
+          },
+          authorize?: false
+        )
 
       case result do
         {:ok, channel} ->
@@ -337,7 +346,8 @@ defmodule Banter.GuildServer do
   end
 
   defp load_guild_state(server_id) do
-    with {:ok, server} <- Chat.get_server(server_id) do
+    # Internal process bootstrap, not on behalf of a specific user's request.
+    with {:ok, server} <- Chat.get_server(server_id, authorize?: false) do
       Logger.debug("Loading guild state for #{server.name}...")
 
       try do

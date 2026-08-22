@@ -316,7 +316,7 @@ Separate database: `banter_test`
 Auto-reset between tests via sandbox mode
 
 ### Load Testing
-See [LOAD_TEST_GUIDE.md](LOAD_TEST_GUIDE.md) for WebSocket load testing
+See [LOAD_TEST_GUIDE.md](docs/LOAD_TEST_GUIDE.md) for WebSocket load testing
 
 ---
 
@@ -390,14 +390,14 @@ User sends message:
 ## Documentation
 
 ### Detailed Guides
-- [PROJECT_DOCUMENTATION_2026-02-06.md](PROJECT_DOCUMENTATION_2026-02-06.md) - Comprehensive project docs
-- [ONLINE_STATUS_GUIDE.md](ONLINE_STATUS_GUIDE.md) - User presence system
-- [HEARTBEAT_MONITORING.md](HEARTBEAT_MONITORING.md) - Gateway heartbeat details
-- [LOAD_TEST_GUIDE.md](LOAD_TEST_GUIDE.md) - WebSocket load testing
-- [SCALABILITY_ANALYSIS.md](SCALABILITY_ANALYSIS.md) - Performance considerations
-- [SETUP_UI.md](SETUP_UI.md) - UI setup guide
-- [FILE_UPLOAD_GUIDE.md](FILE_UPLOAD_GUIDE.md) - File upload system implementation
-- [VOICE_VIDEO_GUIDE.md](VOICE_VIDEO_GUIDE.md) - WebRTC voice/video implementation plan
+- [PROJECT_DOCUMENTATION_2026-02-06.md](docs/PROJECT_DOCUMENTATION_2026-02-06.md) - Comprehensive project docs
+- [ONLINE_STATUS_GUIDE.md](docs/ONLINE_STATUS_GUIDE.md) - User presence system
+- [HEARTBEAT_MONITORING.md](docs/HEARTBEAT_MONITORING.md) - Gateway heartbeat details
+- [LOAD_TEST_GUIDE.md](docs/LOAD_TEST_GUIDE.md) - WebSocket load testing
+- [SCALABILITY_ANALYSIS.md](docs/SCALABILITY_ANALYSIS.md) - Performance considerations
+- [SETUP_UI.md](docs/SETUP_UI.md) - UI setup guide
+- [FILE_UPLOAD_GUIDE.md](docs/FILE_UPLOAD_GUIDE.md) - File upload system implementation
+- [VOICE_VIDEO_GUIDE.md](docs/VOICE_VIDEO_GUIDE.md) - WebRTC voice/video implementation plan
 
 ### External Resources
 - [Phoenix Docs](https://hexdocs.pm/phoenix/)
@@ -535,7 +535,7 @@ config :banter, :webrtc,
 ## Project Goals
 
 **Current State:** Core chat + voice channel infrastructure working
-**Next Up:** Voice/video Phase 3 Steps 3-4 — client-side WebRTC integration (see [VOICE_VIDEO_GUIDE.md](VOICE_VIDEO_GUIDE.md))
+**Next Up:** Voice/video Phase 3 Steps 3-4 — client-side WebRTC integration (see [VOICE_VIDEO_GUIDE.md](docs/VOICE_VIDEO_GUIDE.md))
 **Completed:**
 - ✅ Message pagination with UUID v7 cursor
 - ✅ Image file uploads with local storage

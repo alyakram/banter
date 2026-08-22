@@ -120,36 +120,46 @@ defmodule BanterWeb.ChatLive do
 
   @impl true
   def handle_params(%{"server_id" => server_id, "channel_id" => channel_id}, _uri, socket) do
+    socket = load_server(socket, server_id)
 
-    socket =
-      socket
-      |> load_server(server_id)
-      |> load_channel(channel_id)
-      |> subscribe_to_channel(channel_id)
-      |> assign(:show_mobile_sidebar, false)
+    if socket.assigns.current_server do
+      socket =
+        socket
+        |> load_channel(channel_id)
+        |> subscribe_to_channel(channel_id)
+        |> assign(:show_mobile_sidebar, false)
 
-    {:noreply, socket}
+      {:noreply, socket}
+    else
+      # Not found, or not a member — don't leave the user parked on a dead
+      # URL with an empty shell; bounce back to the server list.
+      {:noreply, push_patch(socket, to: ~p"/chat")}
+    end
   end
 
   def handle_params(%{"server_id" => server_id}, _uri, socket) do
     socket = load_server(socket, server_id)
 
-    # Auto-select first channel
-    case socket.assigns.channels do
-      [first | _] ->
-        socket =
-          socket
-          |> load_channel(first.id)
-          |> subscribe_to_channel(first.id)
+    if socket.assigns.current_server do
+      # Auto-select first channel
+      case socket.assigns.channels do
+        [first | _] ->
+          socket =
+            socket
+            |> load_channel(first.id)
+            |> subscribe_to_channel(first.id)
 
-        {:noreply,
-         push_patch(socket,
-           to: ~p"/chat/#{server_id}/#{first.id}",
-           replace: true
-         )}
+          {:noreply,
+           push_patch(socket,
+             to: ~p"/chat/#{server_id}/#{first.id}",
+             replace: true
+           )}
 
-      [] ->
-        {:noreply, socket}
+        [] ->
+          {:noreply, socket}
+      end
+    else
+      {:noreply, push_patch(socket, to: ~p"/chat")}
     end
   end
 

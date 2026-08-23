@@ -33,6 +33,8 @@ defmodule Banter.Application do
       {Registry, keys: :unique, name: Banter.VoiceRoomRegistry},
       # DynamicSupervisor for voice room processes (Membrane RTC Engine instances)
       {DynamicSupervisor, strategy: :one_for_one, name: Banter.VoiceRoomSupervisor},
+      # Rate limiter for the gateway (connection + IDENTIFY/RESUME throttling)
+      Banter.RateLimiter,
       # Start to serve requests, typically the last entry
       BanterWeb.Endpoint,
       {AshAuthentication.Supervisor, [otp_app: :banter]}

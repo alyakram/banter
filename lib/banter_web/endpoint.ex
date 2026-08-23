@@ -16,8 +16,13 @@ defmodule BanterWeb.Endpoint do
     longpoll: [connect_info: [session: @session_options]]
 
   # Gateway WebSocket for real-time events
+  #
+  # connect_info: [:peer_data] exposes the raw TCP peer address to
+  # UserSocket.connect/3, used for rate limiting. NOTE: if this app is ever
+  # deployed behind a reverse proxy/CDN, :peer_data will be the proxy's IP,
+  # not the real client's — add :x_headers and parse x-forwarded-for then.
   socket "/gateway", BanterWeb.UserSocket,
-    websocket: true,
+    websocket: [connect_info: [:peer_data]],
     longpoll: false
 
   # Serve at "/" the static files from "priv/static" directory.

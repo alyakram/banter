@@ -20,7 +20,10 @@ defmodule Banter.Session do
   - Zombie sessions are cleaned up after timeout
   """
 
-  use GenServer
+  # :transient — restart on a crash, but not on the deliberate {:stop, :normal, _}
+  # zombie-cleanup below. `:permanent` (the default) would restart on *any* exit,
+  # including that one, undoing the cleanup by immediately respawning it.
+  use GenServer, restart: :transient
   require Logger
 
   alias Banter.{Chat, Gateway}

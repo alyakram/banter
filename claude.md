@@ -15,7 +15,7 @@ A Discord-inspired chat application featuring:
 - User presence tracking with custom statuses (online/away/dnd/invisible)
 - WebSocket gateway protocol for external clients
 - Guild (server) system with channels and role-based permissions
-- Voice channels with WebRTC audio (Membrane Framework SFU)
+- Voice channels with WebRTC audio (ex_webrtc, pure Elixir — audio only, video not yet implemented)
 - File uploads with local storage
 - Authentication with AshAuthentication + Bcrypt
 
@@ -25,7 +25,7 @@ A Discord-inspired chat application featuring:
 - **Real-time:** Phoenix PubSub + Phoenix.Presence
 - **Auth:** AshAuthentication with JWT tokens
 - **Background Jobs:** Oban
-- **Voice/Video:** Membrane Framework + membrane_webrtc_plugin (pure Elixir WebRTC SFU)
+- **Voice:** ex_webrtc (pure Elixir WebRTC) — custom SFU via `Voice.Room`/`Voice.Peer` GenServers, no Membrane, no external SFU server. Audio only; video is not implemented.
 - **IDs:** UUID v7 (time-ordered)
 
 ---
@@ -47,8 +47,8 @@ lib/banter/
 ├── secrets.ex                  # JWT signing secrets
 ├── snowflake.ex                # Unused - project uses UUID v7
 ├── voice/
-│   ├── room.ex                 # GenServer per voice channel - manages pipeline lifecycle
-│   └── pipeline.ex             # Membrane Pipeline for SFU audio routing
+│   ├── room.ex                 # GenServer per voice channel - SFU fan-out hub (VoiceRoomRegistry)
+│   └── peer.ex                 # GenServer per participant - wraps one ExWebRTC.PeerConnection
 └── workers/
     └── voice_cleanup_worker.ex # Oban cron worker - sweeps stale voice states
 ```
@@ -95,7 +95,8 @@ Two main domains: **Accounts** and **Chat**
 ### 2. GenServer Processes
 - **GuildServer:** One process per active server (manages channels, members, broadcasts)
 - **Session:** One process per gateway connection (heartbeat monitoring)
-- **Voice.Room:** One process per active voice channel (manages Membrane pipeline for audio routing)
+- **Voice.Room:** One process per active voice channel — SFU fan-out hub, fans RTP packets between participants
+- **Voice.Peer:** One process per participant in a voice channel — wraps one `ExWebRTC.PeerConnection`
 - Registered via `Registry` for fast lookup (`GuildRegistry`, `VoiceRoomRegistry`)
 - Auto-cleanup when unused (GuildServer: 30 min, Voice.Room: 5 min)
 
@@ -200,9 +201,27 @@ online_users = Presence.online_user_ids()
 - **Memberships** join Users to Servers
 
 ### Authorization
-- Owner-based policies use `relates_to_actor_via(:owner_id)`
-- Custom policies check membership: `actor_is_member()`
-- All auth actions bypass with `AshAuthentication.Checks.AshAuthenticationInteraction`
+`Server`, `Channel`, `Member`, `VoiceState`, and `Message` all have
+`authorizers: [Ash.Policy.Authorizer]` with real policies (not just declared —
+actually enforced). Patterns used:
+- Reads are membership-gated: `authorize_if expr(exists(server.members, user_id == ^actor(:id)))`
+  (or `exists(members, ...)` directly on `Server`)
+- Self-only update/destroy: `authorize_if expr(user_id == ^actor(:id))` (or `author_id`/`owner_id`)
+- All auth actions bypass with `bypass AshAuthentication.Checks.AshAuthenticationInteraction`
+- **Create actions can't use `expr()` relationship or attribute filters** — Ash has no persisted
+  row yet to filter against and raises `Cannot use a filter to authorize a create`. Two custom
+  `Ash.Policy.SimpleCheck` modules in `lib/banter/chat/checks/` handle this: `ActorIsServerMember`
+  resolves `server_id` off the changeset/query directly and does a real membership lookup;
+  `ActorSelfJoinsAsMember` reads the post-default attribute value (not `^arg(:role)`, which is
+  `nil` when the client omits the field even though the attribute still gets its default)
+- Because these policies are real, **every call site touching these resources must pass the right
+  `actor:`** (or an explicitly-commented `authorize?: false` for genuinely trusted internal-process
+  paths — GuildServer's own state bootstrap, its already-membership-validated `create_channel`,
+  the Oban voice cleanup sweep). Forgetting this doesn't error at compile time — it silently denies
+  or returns `NotFound`, so watch for that when adding new features here.
+- `Message`'s `read`/`create` policies are still `authorize_if always()` — a known gap, tracked in
+  `AUDIT_FINDINGS.md`, deliberately left alone so the Server/Channel/Member/VoiceState PR stayed
+  reviewable
 
 ### LiveView Assigns
 Common assigns in ChatLive:
@@ -300,6 +319,31 @@ live_session :authenticated, on_mount: BanterWeb.LiveUserAuth do
 end
 ```
 
+### 8. Ash Policies — Create Actions Can't Filter on Relationships/Attributes
+```elixir
+# ❌ Wrong — raises "Cannot use a filter to authorize a create"
+policy action_type(:create) do
+  authorize_if expr(owner_id == ^actor(:id))
+end
+
+# ✅ Right — reference the changeset argument instead (a static value, not a filter)
+policy action_type(:create) do
+  authorize_if expr(^actor(:id) == ^arg(:owner_id))
+end
+
+# ✅ For relationship checks on create (e.g. "actor is a member of the
+# server this row is being created for"), write a custom
+# Ash.Policy.SimpleCheck that resolves the id off the changeset and runs a
+# real query — see lib/banter/chat/checks/actor_is_server_member.ex
+```
+**Why:** on create there's no persisted row yet, so Ash can't build a SQL filter to check against
+it — that machinery only works for read/update/destroy. `^arg(:foo)` sidesteps this because it's
+a value already on the changeset, not something requiring a query. Also watch out: `^arg(:foo)` is
+only reliable for **required** arguments — if an attribute has a default and the client omits it,
+`arg/1` sees `nil` while the attribute already has its default applied. Use
+`Ash.Changeset.get_attribute/2` inside a custom check when that distinction matters (see
+`ActorSelfJoinsAsMember`).
+
 ---
 
 ## Testing
@@ -390,6 +434,7 @@ User sends message:
 ## Documentation
 
 ### Detailed Guides
+- [AUDIT_FINDINGS.md](AUDIT_FINDINGS.md) - Codebase security/quality audit tracker — check items off as they're fixed, see it for what's still open
 - [PROJECT_DOCUMENTATION_2026-02-06.md](docs/PROJECT_DOCUMENTATION_2026-02-06.md) - Comprehensive project docs
 - [ONLINE_STATUS_GUIDE.md](docs/ONLINE_STATUS_GUIDE.md) - User presence system
 - [HEARTBEAT_MONITORING.md](docs/HEARTBEAT_MONITORING.md) - Gateway heartbeat details
@@ -405,10 +450,7 @@ User sends message:
 - [Ash Framework](https://hexdocs.pm/ash/)
 - [AshAuthentication](https://hexdocs.pm/ash_authentication/)
 - [Phoenix.Presence](https://hexdocs.pm/phoenix/Phoenix.Presence.html)
-- [Membrane Framework](https://membrane.stream/) - Elixir multimedia framework (SFU for voice/video)
-- [membrane_webrtc_plugin (Hex)](https://hex.pm/packages/membrane_webrtc_plugin) - WebRTC plugin with LiveView integration
-- [membrane_webrtc_plugin (Docs)](https://hexdocs.pm/membrane_webrtc_plugin/) - API docs (Source, Sink, Signaling, Live.Capture/Player)
-- [ex_webrtc](https://github.com/elixir-webrtc/ex_webrtc) - Pure Elixir WebRTC implementation (used by membrane_webrtc_plugin)
+- [ex_webrtc](https://github.com/elixir-webrtc/ex_webrtc) - Pure Elixir WebRTC implementation used directly for the voice SFU (no Membrane)
 - [MDN WebRTC API](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API) - Browser WebRTC reference
 
 ---
@@ -503,13 +545,18 @@ PORT=4000
 - `PHX_HOST` - Domain name
 - `PORT` - Server port
 
-### Voice/Video (when implemented)
+### Voice (implemented — audio only, no external service needed)
+`ex_webrtc` runs in-process — no separate SFU server to deploy or configure.
 ```elixir
-# No external service URLs needed — Membrane runs in-process
 # config/dev.exs
 config :banter, :webrtc,
   ice_servers: [%{urls: "stun:stun.l.google.com:19302"}]
 ```
+STUN-only works on the same LAN. For cross-network use (different ISPs/mobile data), set
+`metered_username`/`metered_password` in `.env` — `dev.exs` reads them and adds a TURN server to
+`ice_servers`; `root.html.heex` injects `window.__TURN__` for the browser-side `RTCPeerConnection`
+in `hooks.js`. Start the server with `export $(cat .env | xargs) && mix phx.server` when testing
+across networks.
 
 ---
 
@@ -534,21 +581,29 @@ config :banter, :webrtc,
 
 ## Project Goals
 
-**Current State:** Core chat + voice channel infrastructure working
-**Next Up:** Voice/video Phase 3 Steps 3-4 — client-side WebRTC integration (see [VOICE_VIDEO_GUIDE.md](docs/VOICE_VIDEO_GUIDE.md))
+**Current State:** Core chat + voice channels (audio) working end-to-end
+**Next Up:** Voice polish & error handling (see [VOICE_VIDEO_GUIDE.md](docs/VOICE_VIDEO_GUIDE.md)'s
+Phase 4/5) — speaking indicators, mic-permission-denied handling, ICE-failure UI feedback, mobile
+browser testing
 **Completed:**
 - ✅ Message pagination with UUID v7 cursor
 - ✅ Image file uploads with local storage
-- ✅ Voice channel UI with join/leave/mute/deafen (Phase 2)
-- ✅ Page-refresh voice state fix + Oban cleanup worker (Phase 2.5)
-- ✅ Membrane dep swap + Voice.Room GenServer + Pipeline (Phase 3 Steps 1-2)
-**In Progress:**
-- Voice/video channels — real audio (Phase 3 Steps 3-4: LiveView signaling + JS hooks)
+- ✅ Voice channels (audio) — join/leave/mute/deafen, real WebRTC audio via `ex_webrtc`
+  (`Voice.Room`/`Voice.Peer` SFU), TURN support for cross-network calls
+- ✅ Page-refresh voice state fix + Oban cleanup worker
+- ✅ Gateway IDENTIFY/RESUME now require a verified AshAuthentication JWT instead of a trusted
+  client-supplied `user_id` — closed a full user-impersonation hole
+- ✅ Ash authorization policies on `Server`, `Channel`, `Member`, `VoiceState` — previously any
+  authenticated user could read/write any guild's data; see the Authorization section above
+- ✅ ChatLive redirects non-members away from server/channel URLs they don't have access to
 **Future:**
+- Video calling — not started; voice (audio-only) is the current ceiling
 - Direct messages
 - Rich text formatting
+- Remaining items in [AUDIT_FINDINGS.md](AUDIT_FINDINGS.md): rate limiting on the gateway, DB
+  indexes on FK columns, `Message`'s still-open `read`/`create` policies, SVG upload XSS risk
 
 ---
 
-**Last Updated:** 2026-02-11
+**Last Updated:** 2026-08-23
 **For Questions:** Check PROJECT_DOCUMENTATION_2026-02-06.md or explore the codebase!

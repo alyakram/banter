@@ -12,7 +12,10 @@ defmodule Banter.Voice.Room do
   When participants join/leave, existing Peers renegotiate to add/remove sender tracks.
   """
 
-  use GenServer
+  # :transient — restart on a crash, but not on the deliberate {:stop, :normal, _}
+  # idle-timeout below. `:permanent` (the default) would restart on *any* exit,
+  # including that one, undoing the idle cleanup by immediately respawning it.
+  use GenServer, restart: :transient
   require Logger
 
   alias Banter.Voice.Peer

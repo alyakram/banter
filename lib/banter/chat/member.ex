@@ -20,6 +20,14 @@ defmodule Banter.Chat.Member do
       reference :user, on_delete: :delete
       reference :server, on_delete: :delete
     end
+
+    custom_indexes do
+      # The unique (user_id, server_id) identity below already covers
+      # by_user/by_user_and_server via its leftmost prefix on user_id, but
+      # by_server filters on server_id alone — not a usable prefix of that
+      # composite — so it needs its own index. Called on every server switch.
+      index [:server_id]
+    end
   end
 
   attributes do

@@ -22,6 +22,16 @@ defmodule Banter.Chat.Message do
       reference :channel, on_delete: :delete
       reference :author, on_delete: :nilify
     end
+
+    custom_indexes do
+      # Composite, not just [:channel_id] — by_channel filters on channel_id
+      # and sorts id desc (see AUDIT_FINDINGS.md #5's note on UUID v7 as
+      # cursor), so this one index covers both the filter and the sort for
+      # the hottest query in the app.
+      index [:channel_id, :id]
+      index [:author_id]
+      index [:reply_to_id]
+    end
   end
 
   paper_trail do

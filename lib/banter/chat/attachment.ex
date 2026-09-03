@@ -33,6 +33,11 @@ defmodule Banter.Chat.Attachment do
     references do
       reference :message, on_delete: :delete
     end
+
+    custom_indexes do
+      # Postgres doesn't auto-index FK columns; by_message filters on this.
+      index [:message_id]
+    end
   end
 
   attributes do

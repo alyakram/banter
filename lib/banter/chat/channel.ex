@@ -22,6 +22,11 @@ defmodule Banter.Chat.Channel do
       reference :server, on_delete: :delete
       reference :messages, on_delete: :delete
     end
+
+    custom_indexes do
+      # Postgres doesn't auto-index FK columns; by_server filters on this.
+      index [:server_id]
+    end
   end
 
   attributes do

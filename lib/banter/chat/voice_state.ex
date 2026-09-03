@@ -22,6 +22,13 @@ defmodule Banter.Chat.VoiceState do
       reference :channel, on_delete: :delete
       reference :server, on_delete: :delete
     end
+
+    custom_indexes do
+      # user_id is already covered by voice_states_unique_user_voice_index.
+      # by_channel and by_server each filter on these alone.
+      index [:channel_id]
+      index [:server_id]
+    end
   end
 
   attributes do

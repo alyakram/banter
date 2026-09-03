@@ -86,6 +86,92 @@ The app runs on two ports:
 
 The app uses PostgreSQL with the database name `banter_dev` by default. Credentials in `config/dev.exs` default to `postgres/postgres` on `localhost`.
 
+### Schema
+
+Eight Ash resources — two in the `Accounts` domain, six in `Chat` — each mapped straight onto the
+Postgres table below it. Primary keys are UUID v7 almost everywhere (time-ordered, no separate
+cursor needed for pagination); `users` and `tokens` are the two exceptions, still on a plain UUID
+and a JWT `jti` string. Every foreign key is backed by a real Postgres index — `messages` uses a
+composite `(channel_id, id)` index to cover both the paginated `by_channel` filter and its sort in
+one scan, and `members` has a dedicated `server_id` index since its unique `(user_id, server_id)`
+pair isn't a usable prefix for a `server_id`-only lookup.
+
+```mermaid
+erDiagram
+    USERS ||--o{ SERVERS : owns
+    USERS ||--o{ MEMBERS : joins
+    USERS ||--o{ MESSAGES : authors
+    USERS ||--o| VOICE_STATES : "connects (unique)"
+    SERVERS ||--o{ CHANNELS : has
+    SERVERS ||--o{ MEMBERS : has
+    SERVERS ||--o{ VOICE_STATES : has
+    CHANNELS ||--o{ MESSAGES : contains
+    CHANNELS ||--o{ VOICE_STATES : has
+    MESSAGES ||--o{ ATTACHMENTS : has
+    MESSAGES ||--o{ MESSAGES : "replies to"
+
+    USERS {
+        uuid id PK
+        citext email UK
+        string hashed_password
+        string availability
+        string avatar_url
+    }
+    TOKENS {
+        string jti PK
+        string subject
+        string purpose
+        datetime expires_at
+        map extra_data
+    }
+    SERVERS {
+        uuid7 id PK
+        uuid owner_id FK
+        string name
+        string invite_code UK
+        string description
+    }
+    CHANNELS {
+        uuid7 id PK
+        uuid server_id FK
+        string name
+        string type
+        integer position
+    }
+    MEMBERS {
+        uuid7 id PK
+        uuid user_id FK
+        uuid server_id FK
+        string role
+    }
+    MESSAGES {
+        uuid7 id PK
+        uuid channel_id FK
+        uuid author_id FK
+        uuid reply_to_id FK
+        string content
+        boolean pinned
+    }
+    ATTACHMENTS {
+        uuid7 id PK
+        uuid message_id FK
+        string filename
+        string content_type
+        integer size
+    }
+    VOICE_STATES {
+        uuid7 id PK
+        uuid user_id FK "unique"
+        uuid channel_id FK
+        uuid server_id FK
+        boolean self_mute
+        boolean self_deaf
+    }
+```
+
+`tokens` has no drawn relationship above — it's linked to `users` only logically, via the
+`subject` claim inside a JWT, not by a real foreign key.
+
 To reset the database:
 
 ```bash

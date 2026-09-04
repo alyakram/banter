@@ -13,6 +13,7 @@ defmodule Banter.Fixtures do
   """
 
   alias Banter.Accounts
+  alias Banter.Chat
 
   @password "correcthorsebatterystaple"
 
@@ -51,5 +52,55 @@ defmodule Banter.Fixtures do
       password_confirmation: password
     })
     |> Ash.create!(authorize?: false)
+  end
+
+  @doc """
+  Creates a server owned by `owner`.
+
+  Note this creates the server *only* — no membership row, not even for the
+  owner. That mirrors `Chat.Server`'s own create action, and matters because
+  the read policy is membership-gated: a server in this state can't be read by
+  anyone yet. Use `server_with_owner_fixture/1` for the realistic state.
+  """
+  def server_fixture(owner, attrs \\ %{}) do
+    attrs =
+      attrs
+      |> Map.new()
+      |> Map.put_new(:name, unique_name("Server"))
+      |> Map.put(:owner_id, owner.id)
+
+    Chat.Server
+    |> Ash.Changeset.for_create(:create, attrs)
+    |> Ash.create!(authorize?: false)
+  end
+
+  @doc """
+  Creates a membership joining `user` to `server`.
+  """
+  def member_fixture(user, server, attrs \\ %{}) do
+    attrs =
+      attrs
+      |> Map.new()
+      |> Map.merge(%{user_id: user.id, server_id: server.id})
+
+    Chat.Member
+    |> Ash.Changeset.for_create(:create, attrs)
+    |> Ash.create!(authorize?: false)
+  end
+
+  @doc """
+  Creates a server plus the owner's membership row — the state the app
+  actually puts a new server in (GuildServer joins the owner right after
+  creating it). Returns `{server, membership}`.
+  """
+  def server_with_owner_fixture(owner, attrs \\ %{}) do
+    server = server_fixture(owner, attrs)
+    membership = member_fixture(owner, server, %{role: :owner})
+    {server, membership}
+  end
+
+  @doc "A unique display name, for resources whose names aren't constrained to be unique."
+  def unique_name(prefix) do
+    "#{prefix} #{Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)}"
   end
 end

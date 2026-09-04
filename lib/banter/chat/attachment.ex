@@ -24,6 +24,7 @@ defmodule Banter.Chat.Attachment do
     otp_app: :banter,
     domain: Banter.Chat,
     data_layer: AshPostgres.DataLayer,
+    authorizers: [Ash.Policy.Authorizer],
     extensions: [AshArchival.Resource]
 
   postgres do
@@ -101,6 +102,33 @@ defmodule Banter.Chat.Attachment do
     end
   end
 
+  policies do
+    bypass AshAuthentication.Checks.AshAuthenticationInteraction do
+      authorize_if always()
+    end
+
+    # An attachment inherits its message's audience: readable by members of the
+    # server the message's channel belongs to, and mutable only by the person
+    # who posted it. This resource previously had no authorizer at all, so
+    # every action was open to anyone (AUDIT_FINDINGS.md #32).
+    policy action_type(:read) do
+      authorize_if expr(exists(message.channel.server.members, user_id == ^actor(:id)))
+    end
+
+    policy action_type([:update, :destroy]) do
+      authorize_if expr(message.author_id == ^actor(:id))
+    end
+
+    # Creates are only reachable through Message's `manage_relationship` —
+    # `message_id` isn't an accepted input, so an attachment can't be pointed
+    # at a message on its own (there's a test pinning that). Authorization for
+    # creating one is therefore the parent Message create's job, which is
+    # itself gated on channel membership and self-authorship.
+    policy action_type(:create) do
+      authorize_if always()
+    end
+  end
+
   validations do
     # Content type must be one of the raster formats Banter.Storage accepts.
     #
@@ -153,6 +181,11 @@ defmodule Banter.Chat.Attachment do
     update :update do
       primary? true
       accept [:width, :height, :url]
+      # The content_type validation above is an anonymous function, which Ash
+      # can't run atomically — without this the action fails every call with
+      # Ash.Error.Framework.MustBeAtomic. Same bug Message.pin/unpin had.
+      # See AUDIT_FINDINGS.md #31.
+      require_atomic? false
     end
 
     read :by_id do

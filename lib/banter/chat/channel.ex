@@ -27,6 +27,11 @@ defmodule Banter.Chat.Channel do
       # Postgres doesn't auto-index FK columns; by_server filters on this.
       index [:server_id]
     end
+
+    # The SQL predicate for the unique_name_per_server identity's `where`.
+    # AshPostgres can't infer this from the Ash expression, so the partial
+    # index needs it spelled out here.
+    identity_wheres_to_sql unique_name_per_server: "archived_at IS NULL"
   end
 
   attributes do
@@ -77,8 +82,14 @@ defmodule Banter.Chat.Channel do
   end
 
   identities do
-    # Channel names must be unique within a server
-    identity :unique_name_per_server, [:name, :server_id]
+    # Channel names must be unique within a server — but only among *live*
+    # channels. Deletion here is an AshArchival soft delete, so without this
+    # `where` the archived row keeps occupying (name, server_id) and the name
+    # is burned forever: delete #general and the server can never have a
+    # #general again. See AUDIT_FINDINGS.md #28.
+    identity :unique_name_per_server, [:name, :server_id] do
+      where expr(is_nil(archived_at))
+    end
   end
 
   policies do

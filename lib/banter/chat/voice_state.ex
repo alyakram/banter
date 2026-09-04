@@ -90,8 +90,15 @@ defmodule Banter.Chat.VoiceState do
       authorize_if expr(^actor(:id) == ^arg(:user_id))
     end
 
+    # Checked against the *channel's* server rather than the `server_id`
+    # argument. channel_id arrives from the client while server_id comes from
+    # the caller's current session, and trusting the claimed server_id let a
+    # member of server A join a voice channel in server B by passing B's
+    # channel with A's server_id — and Voice.Room is keyed purely on
+    # channel_id, so that put them in another server's live audio.
+    # See AUDIT_FINDINGS.md #33.
     policy action_type(:create) do
-      authorize_if Banter.Chat.Checks.ActorIsServerMember
+      authorize_if Banter.Chat.Checks.ActorIsChannelMember
     end
 
     # Mute/deafen toggles and leaving are both self-only.
@@ -116,6 +123,30 @@ defmodule Banter.Chat.VoiceState do
       change set_attribute(:user_id, arg(:user_id))
       change set_attribute(:channel_id, arg(:channel_id))
       change set_attribute(:server_id, arg(:server_id))
+
+      # channel_id and server_id arrive as independent arguments, so nothing
+      # otherwise stops them describing two different servers. Every
+      # membership-gated read filters on the stored server_id, so a mismatched
+      # row would be filed under the wrong server's audience. Verify they agree
+      # — and that the channel is actually a voice channel.
+      validate fn changeset, _context ->
+        channel_id = Ash.Changeset.get_argument(changeset, :channel_id)
+        server_id = Ash.Changeset.get_argument(changeset, :server_id)
+
+        case Ash.get(Banter.Chat.Channel, channel_id, authorize?: false) do
+          {:ok, %{server_id: ^server_id, type: :voice}} ->
+            :ok
+
+          {:ok, %{server_id: ^server_id}} ->
+            {:error, field: :channel_id, message: "is not a voice channel"}
+
+          {:ok, _other_server} ->
+            {:error, field: :server_id, message: "does not match the channel's server"}
+
+          _ ->
+            {:error, field: :channel_id, message: "does not exist"}
+        end
+      end
     end
 
     update :update do

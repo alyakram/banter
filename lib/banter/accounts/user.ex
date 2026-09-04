@@ -84,6 +84,12 @@ defmodule Banter.Accounts.User do
                 strategy_name: :password, password_argument: :current_password}
 
       change {AshAuthentication.Strategy.Password.HashPasswordChange, strategy_name: :password}
+
+      # Attached explicitly. The log_out_everywhere add-on registers this as a
+      # global change guarded by `Changing(hashed_password)`, but that guard
+      # isn't satisfied when it's evaluated here, so the hook was silently
+      # skipped and changing a password revoked nothing. See AUDIT_FINDINGS.md #35.
+      change AshAuthentication.AddOn.LogOutEverywhere.OnPasswordChange
     end
 
     read :sign_in_with_password do

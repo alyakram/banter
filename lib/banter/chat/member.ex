@@ -115,7 +115,13 @@ defmodule Banter.Chat.Member do
 
     update :update do
       primary? true
-      accept [:nickname, :role]
+      # Deliberately does NOT accept :role. This action is self-only (see the
+      # update/destroy policy above), so accepting :role here would let anyone
+      # join as :member and immediately promote themselves to :owner —
+      # defeating ActorSelfJoinsAsMember, which exists precisely to stop a user
+      # picking their own role. Granting a role needs its own action with its
+      # own policy (an owner/admin check), added alongside role management.
+      accept [:nickname]
     end
 
     read :by_server do

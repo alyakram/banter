@@ -9,7 +9,11 @@ defmodule Banter.Accounts do
     resource Banter.Accounts.Token
 
     resource Banter.Accounts.User do
-      define :update_user_availability, args: [:id], action: :update_availability
+      # No `args: [:id]` here — :id is the record's primary key, not an
+      # argument on :update_availability, so declaring it as one made every
+      # call fail with NoSuchInput. Update interfaces already take the record
+      # (or its id) as the first positional parameter.
+      define :update_user_availability, action: :update_availability
     end
   end
 end

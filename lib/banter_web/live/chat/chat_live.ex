@@ -79,7 +79,9 @@ defmodule BanterWeb.ChatLive do
       |> assign(:typing_users, %{})
       |> assign(:show_avatar_picker, false)
       |> allow_upload(:attachments,
-        accept: ~w(.jpg .jpeg .png .gif .webp .svg),
+        # No .svg — it's XML that can carry <script>, and uploads are served
+        # same-origin from /uploads (AUDIT_FINDINGS.md #8).
+        accept: ~w(.jpg .jpeg .png .gif .webp),
         max_entries: 10,
         max_file_size: 25_000_000,  # 25 MB
         auto_upload: false
@@ -234,6 +236,10 @@ defmodule BanterWeb.ChatLive do
               {:postpone, :error}
           end
         end)
+        # A postponed entry still returns its value here, so drop the :error
+        # atoms rather than passing them on as if they were attachments.
+        # Reachable when Storage rejects an unsupported content type.
+        |> Enum.filter(&is_map/1)
 
       reply_to_id = socket.assigns.replying_to && socket.assigns.replying_to.id
 

@@ -25,7 +25,16 @@ defmodule BanterWeb.Endpoint do
     websocket: [connect_info: [:peer_data]],
     longpoll: false
 
-  # Serve at "/" the static files from "priv/static" directory.
+  # Security headers for user-uploaded content under /uploads.
+  #
+  # Must stay ahead of Plug.Static: static plugs send the response themselves
+  # and halt, so response headers set after them never reach the client.
+  # "uploads" is part of BanterWeb.static_paths(), so the plug below is what
+  # actually serves them.
+  plug BanterWeb.Plugs.UploadSecurityHeaders
+
+  # Serve at "/" the static files from "priv/static" directory —
+  # user uploads under "uploads" included.
   #
   # When code reloading is disabled (e.g., in production),
   # the `gzip` option is enabled to serve compressed
@@ -36,12 +45,6 @@ defmodule BanterWeb.Endpoint do
     gzip: not code_reloading?,
     only: BanterWeb.static_paths(),
     raise_on_missing_only: code_reloading?
-
-  # Serve uploaded files from "priv/static/uploads" directory
-  plug Plug.Static,
-    at: "/uploads",
-    from: {:banter, "priv/static/uploads"},
-    gzip: false
 
   # Code reloading can be explicitly enabled under the
   # :code_reloader configuration of your endpoint.

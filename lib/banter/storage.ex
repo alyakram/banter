@@ -31,15 +31,45 @@ defmodule Banter.Storage do
 
   @upload_dir "priv/static/uploads"
 
+  # Raster image formats only, each mapped to the extension it gets stored
+  # under. SVG is deliberately absent: it's XML, it can carry `<script>`, and
+  # these files are served same-origin out of /uploads — so a stored SVG turns
+  # into stored XSS the moment anyone opens its direct URL. See
+  # AUDIT_FINDINGS.md #8.
+  @allowed_content_types %{
+    "image/jpeg" => ".jpg",
+    "image/png" => ".png",
+    "image/gif" => ".gif",
+    "image/webp" => ".webp"
+  }
+
+  @doc """
+  The MIME types accepted for upload, sorted.
+
+  `Banter.Chat.Attachment` validates against this same list, so the storage
+  layer and the data layer can't drift apart on what's considered safe.
+  """
+  def allowed_content_types, do: @allowed_content_types |> Map.keys() |> Enum.sort()
+
+  @doc "Whether `content_type` is an accepted upload MIME type."
+  def allowed_content_type?(content_type), do: Map.has_key?(@allowed_content_types, content_type)
+
   @doc """
   Uploads a file to local filesystem storage.
+
+  Rejects any `content_type` outside `allowed_content_types/0`.
+
+  The stored extension is derived from the (allowlisted) content type, **not**
+  from the client-supplied filename — otherwise a caller could pick the
+  extension the file is later served under, and Plug.Static derives the
+  response `Content-Type` from exactly that extension.
 
   ## Parameters
 
   - `file_path`: Path to the temporary uploaded file
   - `server_id`: Server UUID (for directory organization)
   - `channel_id`: Channel UUID (for directory organization)
-  - `filename`: Original filename from upload
+  - `filename`: Original filename from upload (retained for logging only)
   - `content_type`: MIME type of the file
 
   ## Returns
@@ -55,10 +85,21 @@ defmodule Banter.Storage do
       }}
   """
   def upload_file(file_path, server_id, channel_id, filename, content_type) do
-    # Generate unique filename with original extension
-    ext = Path.extname(filename)
-    uuid = Ash.UUID.generate()
-    filename_unique = "#{uuid}#{ext}"
+    case Map.fetch(@allowed_content_types, content_type) do
+      {:ok, ext} ->
+        store_file(file_path, server_id, channel_id, ext)
+
+      :error ->
+        Logger.warning(
+          "Rejected upload of #{inspect(filename)}: unsupported content type #{inspect(content_type)}"
+        )
+
+        {:error, :unsupported_content_type}
+    end
+  end
+
+  defp store_file(file_path, server_id, channel_id, ext) do
+    filename_unique = "#{Ash.UUID.generate()}#{ext}"
 
     # Build storage path
     storage_path = build_storage_path(server_id, channel_id, filename_unique)

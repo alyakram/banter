@@ -14,7 +14,7 @@ defmodule Banter.Chat.Attachment do
 
   - `filename`: Original filename uploaded by user
   - `size`: File size in bytes (max 25 MB)
-  - `content_type`: MIME type (must be image/*)
+  - `content_type`: MIME type (must be one of `Banter.Storage.allowed_content_types/0`)
   - `storage_path`: Relative path on filesystem
   - `url`: Public URL path for accessing the file
   - `width`, `height`: Image dimensions (optional)
@@ -102,14 +102,23 @@ defmodule Banter.Chat.Attachment do
   end
 
   validations do
-    # Validate content type is an image
+    # Content type must be one of the raster formats Banter.Storage accepts.
+    #
+    # Deliberately an allowlist rather than a `String.starts_with?("image/")`
+    # prefix check: `image/svg+xml` satisfies that prefix, and SVG is XML that
+    # can embed `<script>`. Since attachments are served same-origin from
+    # /uploads, storing one is stored XSS (AUDIT_FINDINGS.md #8). content_type
+    # arrives from the client (`entry.client_type`), so this is the last line
+    # of defense no matter which call site creates the record.
     validate fn changeset, _context ->
       content_type = Ash.Changeset.get_attribute(changeset, :content_type)
 
-      if content_type && String.starts_with?(content_type, "image/") do
+      if Banter.Storage.allowed_content_type?(content_type) do
         :ok
       else
-        {:error, field: :content_type, message: "must be an image type (image/*)"}
+        {:error,
+         field: :content_type,
+         message: "must be one of: #{Enum.join(Banter.Storage.allowed_content_types(), ", ")}"}
       end
     end
   end

@@ -382,16 +382,23 @@ defmodule BanterWeb.ChatLive do
          socket.assigns.current_channel do
       socket = assign(socket, :loading_more_messages, true)
 
+      actor = socket.assigns.current_user
+
       {:ok, msgs} =
-        Chat.list_channel_messages(%{
-          channel_id: socket.assigns.current_channel.id,
-          before_id: socket.assigns.messages_cursor
-        })
+        Chat.list_channel_messages(
+          %{
+            channel_id: socket.assigns.current_channel.id,
+            before_id: socket.assigns.messages_cursor
+          },
+          actor: actor
+        )
 
       has_more = length(msgs) > 50
       msgs = Enum.take(msgs, 50)
       new_cursor = if msgs != [], do: List.last(msgs).id, else: nil
-      older_messages = Ash.load!(Enum.reverse(msgs), [:author, :attachments, reply_to: [:author]])
+
+      older_messages =
+        Ash.load!(Enum.reverse(msgs), [:author, :attachments, reply_to: [:author]], actor: actor)
 
       socket =
         socket
@@ -719,8 +726,12 @@ defmodule BanterWeb.ChatLive do
   def handle_info({:guild_event, {:message_create, message}}, socket) do
     # Only add message if it's for the current channel
     if socket.assigns.current_channel && message.channel_id == socket.assigns.current_channel.id do
-      # Load author and attachments for display
-      {:ok, message} = Ash.load(message, [:author, :attachments, reply_to: [:author]])
+      # Load author and attachments for display. Needs the actor: reply_to is
+      # itself a Message, and message reads are membership-gated.
+      {:ok, message} =
+        Ash.load(message, [:author, :attachments, reply_to: [:author]],
+          actor: socket.assigns.current_user
+        )
 
       socket =
         socket
@@ -1051,12 +1062,15 @@ defmodule BanterWeb.ChatLive do
   defp load_channel(socket, channel_id) do
     case Chat.get_channel(channel_id, actor: socket.assigns.current_user) do
       {:ok, channel} ->
-        {:ok, msgs} = Chat.list_channel_messages(%{channel_id: channel_id})
+        actor = socket.assigns.current_user
+        {:ok, msgs} = Chat.list_channel_messages(%{channel_id: channel_id}, actor: actor)
 
         has_more = length(msgs) > 50
         msgs = Enum.take(msgs, 50)
         cursor = if msgs != [], do: List.last(msgs).id, else: nil
-        messages = Ash.load!(Enum.reverse(msgs), [:author, :attachments, reply_to: [:author]])
+
+        messages =
+          Ash.load!(Enum.reverse(msgs), [:author, :attachments, reply_to: [:author]], actor: actor)
 
         socket
         |> assign(:current_channel, channel)

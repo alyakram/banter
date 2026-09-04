@@ -110,12 +110,29 @@ defmodule Banter.Chat.Message do
       authorize_if always()
     end
 
+    # Messages are readable only by members of the server the channel belongs
+    # to. This was `authorize_if always()`, which let anyone — including an
+    # actorless caller — read every message in every server.
     policy action_type(:read) do
-      authorize_if always()
+      authorize_if expr(exists(channel.server.members, user_id == ^actor(:id)))
     end
 
+    # Creation needs two things to hold, so they're separate policies (all
+    # policies must pass). This was also `authorize_if always()`, which allowed
+    # posting into any channel as any author, since both ids are
+    # client-supplied arguments.
+    #
+    # 1. You can only post as yourself. `^arg/1` works on a create because it's
+    #    a static value rather than a filter over persisted data.
     policy action(:create) do
-      authorize_if always()
+      authorize_if expr(^actor(:id) == ^arg(:author_id))
+    end
+
+    # 2. You must belong to the server owning the channel. That's a
+    #    relationship lookup, which a create can't express as a filter — hence
+    #    the custom check.
+    policy action(:create) do
+      authorize_if Banter.Chat.Checks.ActorIsChannelMember
     end
 
     policy action([:update, :pin, :unpin]) do
@@ -176,13 +193,19 @@ defmodule Banter.Chat.Message do
       end
     end
 
+    # require_atomic? false for the same reason :update sets it — the
+    # "content or attachments" validation above is an anonymous function, which
+    # Ash can't run atomically. Without this both actions fail every time with
+    # Ash.Error.Framework.MustBeAtomic. See AUDIT_FINDINGS.md #29.
     update :pin do
       accept []
+      require_atomic? false
       change set_attribute(:pinned, true)
     end
 
     update :unpin do
       accept []
+      require_atomic? false
       change set_attribute(:pinned, false)
     end
 

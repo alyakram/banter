@@ -214,8 +214,11 @@ defmodule Banter.GuildServer do
 
       case result do
         {:ok, message} ->
-          # Load attachments and reply_to for broadcast
-          message = Ash.load!(message, [:attachments, reply_to: [:author]])
+          # Load attachments and reply_to for broadcast. authorize?: false for
+          # the same reason the create above uses it — this runs on
+          # GuildServer's own trusted path, after validate_channel/
+          # validate_member, not on behalf of a specific user's request.
+          message = Ash.load!(message, [:attachments, reply_to: [:author]], authorize?: false)
 
           Logger.info("✓ Message created with #{length(message.attachments)} attachments")
 
@@ -304,7 +307,9 @@ defmodule Banter.GuildServer do
   def handle_call({:edit_message, message_id, new_content, actor}, _from, state) do
     with {:ok, message} <- Chat.get_message(message_id, authorize?: false),
          {:ok, updated} <- Chat.edit_message(message, %{content: new_content}, actor: actor) do
-      updated = Ash.load!(updated, [:author, :attachments, reply_to: [:author]])
+      # The edit itself was authorized as `actor` above; this load is just
+      # assembling the broadcast payload on GuildServer's own path.
+      updated = Ash.load!(updated, [:author, :attachments, reply_to: [:author]], authorize?: false)
       broadcast_event(state.server_id, {:message_update, updated})
       {:reply, {:ok, updated}, state, @idle_timeout}
     else

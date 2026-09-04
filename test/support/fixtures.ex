@@ -99,6 +99,24 @@ defmodule Banter.Fixtures do
     {server, membership}
   end
 
+  @doc """
+  Creates a channel in `server`.
+
+  `creator` is only used to satisfy the create action's shape; the row is
+  written with `authorize?: false` like every other fixture.
+  """
+  def channel_fixture(server, _creator \\ nil, attrs \\ %{}) do
+    attrs =
+      attrs
+      |> Map.new()
+      |> Map.put_new(:name, unique_name("channel"))
+      |> Map.put(:server_id, server.id)
+
+    Chat.Channel
+    |> Ash.Changeset.for_create(:create, attrs)
+    |> Ash.create!(authorize?: false)
+  end
+
   @doc "A unique display name, for resources whose names aren't constrained to be unique."
   def unique_name(prefix) do
     "#{prefix} #{Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)}"

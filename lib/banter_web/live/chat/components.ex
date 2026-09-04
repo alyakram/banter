@@ -1285,6 +1285,7 @@ defmodule BanterWeb.ChatLive.Components do
     <a
       href={@attachment.url}
       target="_blank"
+      rel="noopener noreferrer"
       class="block bg-neutral rounded-lg overflow-hidden hover:bg-neutral/80 transition-colors"
     >
       <%= if is_image?(@attachment.content_type) do %>

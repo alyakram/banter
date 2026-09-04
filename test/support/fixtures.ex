@@ -117,6 +117,53 @@ defmodule Banter.Fixtures do
     |> Ash.create!(authorize?: false)
   end
 
+  @doc """
+  Creates a message in `channel` authored by `author`.
+
+  Pass `%{attachments: [attachment_attrs()]}` to create attachments with it —
+  that's the only way attachments get created, since `Attachment`'s create
+  action doesn't accept `message_id`; they're managed through `Message`'s
+  `manage_relationship`.
+  """
+  def message_fixture(channel, author, attrs \\ %{}) do
+    attrs =
+      attrs
+      |> Map.new()
+      |> Map.put_new(:content, "hello")
+      |> Map.merge(%{channel_id: channel.id, author_id: author.id})
+
+    Chat.Message
+    |> Ash.Changeset.for_create(:create, attrs)
+    |> Ash.create!(authorize?: false)
+  end
+
+  @doc "Valid attributes for an attachment, for nesting under a message create."
+  def attachment_attrs(extra \\ %{}) do
+    slug = Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+
+    Map.merge(
+      %{
+        filename: "photo.png",
+        size: 1024,
+        content_type: "image/png",
+        storage_path: "servers/a/channels/b/#{slug}.png",
+        url: "/uploads/servers/a/channels/b/#{slug}.png"
+      },
+      Map.new(extra)
+    )
+  end
+
+  @doc """
+  Creates a message carrying one attachment, returning `{message, attachment}`.
+  """
+  def message_with_attachment_fixture(channel, author, attachment_overrides \\ %{}) do
+    message =
+      message_fixture(channel, author, %{attachments: [attachment_attrs(attachment_overrides)]})
+
+    message = Ash.load!(message, [:attachments], authorize?: false)
+    {message, hd(message.attachments)}
+  end
+
   @doc "A unique display name, for resources whose names aren't constrained to be unique."
   def unique_name(prefix) do
     "#{prefix} #{Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)}"

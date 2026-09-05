@@ -34,14 +34,17 @@ defmodule Banter.Storage do
   # Raster image formats only, each mapped to the extension it gets stored
   # under. SVG is deliberately absent: it's XML, it can carry `<script>`, and
   # these files are served same-origin out of /uploads — so a stored SVG turns
-  # into stored XSS the moment anyone opens its direct URL. See
-  # AUDIT_FINDINGS.md #8.
+  # into stored XSS the moment anyone opens its direct URL.
   @allowed_content_types %{
     "image/jpeg" => ".jpg",
     "image/png" => ".png",
     "image/gif" => ".gif",
     "image/webp" => ".webp"
   }
+
+  # How many leading bytes are needed to identify any of the formats above.
+  # WebP is the longest: "RIFF", a 4-byte length, then "WEBP".
+  @magic_byte_count 12
 
   @doc """
   The MIME types accepted for upload, sorted.
@@ -55,14 +58,53 @@ defmodule Banter.Storage do
   def allowed_content_type?(content_type), do: Map.has_key?(@allowed_content_types, content_type)
 
   @doc """
+  The extension an accepted `content_type` is *written* under, e.g.
+  `"image/jpeg"` → `".jpg"`. Returns `nil` for anything not accepted.
+
+  This is the canonical choice for new files, not the only valid one: `.jpeg`
+  is equally correct for a JPEG, and files written before this existed may use
+  it. Code checking whether an existing path agrees with a recorded type should
+  ask `MIME.type/1` — the same lookup `Plug.Static` uses to type the response —
+  rather than comparing against this.
+  """
+  def extension_for(content_type), do: Map.get(@allowed_content_types, content_type)
+
+  @doc """
+  Detects a file's type from its leading bytes.
+
+  Returns `{:ok, content_type}` for one of `allowed_content_types/0`, or
+  `{:error, :unrecognized_content}` for anything else — including a file too
+  short to identify.
+
+  The client's declared type is not consulted. That's the point: every other
+  signal about an upload (the declared MIME type, the filename, its extension)
+  is attacker-chosen, and the bytes are not.
+  """
+  def detect_content_type(file_path) do
+    case read_magic_bytes(file_path) do
+      <<0x89, "PNG", 0x0D, 0x0A, 0x1A, 0x0A, _rest::binary>> -> {:ok, "image/png"}
+      <<0xFF, 0xD8, 0xFF, _rest::binary>> -> {:ok, "image/jpeg"}
+      <<"GIF87a", _rest::binary>> -> {:ok, "image/gif"}
+      <<"GIF89a", _rest::binary>> -> {:ok, "image/gif"}
+      <<"RIFF", _size::binary-size(4), "WEBP", _rest::binary>> -> {:ok, "image/webp"}
+      _ -> {:error, :unrecognized_content}
+    end
+  end
+
+  @doc """
   Uploads a file to local filesystem storage.
 
-  Rejects any `content_type` outside `allowed_content_types/0`.
+  The file's type is determined by **sniffing its leading bytes**, not by
+  trusting `content_type`. A caller can declare anything — `content_type`
+  arrives as `entry.client_type` from the browser — so the declared value is
+  used only as a cheap early reject, and the bytes decide what is actually
+  stored. A file whose contents aren't one of `allowed_content_types/0` is
+  refused however it was labelled.
 
-  The stored extension is derived from the (allowlisted) content type, **not**
-  from the client-supplied filename — otherwise a caller could pick the
-  extension the file is later served under, and Plug.Static derives the
-  response `Content-Type` from exactly that extension.
+  The stored extension follows the *detected* type, and the detected type is
+  returned so the caller can record it rather than the claim. That matters
+  because `Plug.Static` derives the response `Content-Type` from the stored
+  extension: a file served as `image/png` should be a PNG.
 
   ## Parameters
 
@@ -70,35 +112,75 @@ defmodule Banter.Storage do
   - `server_id`: Server UUID (for directory organization)
   - `channel_id`: Channel UUID (for directory organization)
   - `filename`: Original filename from upload (retained for logging only)
-  - `content_type`: MIME type of the file
+  - `content_type`: MIME type declared by the client
 
   ## Returns
 
-  `{:ok, %{storage_path: path, url: url}}` or `{:error, reason}`
+  `{:ok, %{storage_path: path, url: url, content_type: detected}}` or
+  `{:error, reason}`.
 
   ## Examples
 
       iex> upload_file("/tmp/upload.jpg", server_id, channel_id, "photo.jpg", "image/jpeg")
       {:ok, %{
         storage_path: "servers/abc-123/channels/def-456/uuid-123.jpg",
-        url: "/uploads/servers/abc-123/channels/def-456/uuid-123.jpg"
+        url: "/uploads/servers/abc-123/channels/def-456/uuid-123.jpg",
+        content_type: "image/jpeg"
       }}
   """
   def upload_file(file_path, server_id, channel_id, filename, content_type) do
-    case Map.fetch(@allowed_content_types, content_type) do
-      {:ok, ext} ->
-        store_file(file_path, server_id, channel_id, ext)
-
-      :error ->
-        Logger.warning(
-          "Rejected upload of #{inspect(filename)}: unsupported content type #{inspect(content_type)}"
-        )
-
-        {:error, :unsupported_content_type}
+    with :ok <- check_declared_type(content_type, filename),
+         {:ok, detected} <- check_actual_content(file_path, filename, content_type) do
+      store_file(file_path, server_id, channel_id, detected)
     end
   end
 
-  defp store_file(file_path, server_id, channel_id, ext) do
+  defp check_declared_type(content_type, filename) do
+    if allowed_content_type?(content_type) do
+      :ok
+    else
+      Logger.warning(
+        "Rejected upload of #{inspect(filename)}: unsupported content type #{inspect(content_type)}"
+      )
+
+      {:error, :unsupported_content_type}
+    end
+  end
+
+  defp check_actual_content(file_path, filename, declared) do
+    case detect_content_type(file_path) do
+      {:ok, detected} ->
+        if detected != declared do
+          # Not fatal — the bytes win, and they're a format we accept. Worth a
+          # line in the log because it's either a browser being loose about
+          # MIME types or somebody probing.
+          Logger.info(
+            "Upload of #{inspect(filename)} declared #{inspect(declared)} but is #{inspect(detected)}; storing as #{inspect(detected)}"
+          )
+        end
+
+        {:ok, detected}
+
+      {:error, :unrecognized_content} ->
+        Logger.warning(
+          "Rejected upload of #{inspect(filename)}: declared #{inspect(declared)} but contents are not a supported image"
+        )
+
+        {:error, :content_type_mismatch}
+    end
+  end
+
+  defp read_magic_bytes(file_path) do
+    case File.open(file_path, [:read, :binary], &IO.binread(&1, @magic_byte_count)) do
+      {:ok, data} when is_binary(data) -> data
+      # :eof for an empty file, {:error, _} for an unreadable one — neither
+      # identifies as anything, which is the correct outcome.
+      _ -> <<>>
+    end
+  end
+
+  defp store_file(file_path, server_id, channel_id, content_type) do
+    ext = Map.fetch!(@allowed_content_types, content_type)
     filename_unique = "#{Ash.UUID.generate()}#{ext}"
 
     # Build storage path
@@ -115,7 +197,7 @@ defmodule Banter.Storage do
       :ok ->
         url = build_url(storage_path)
         Logger.info("Uploaded file to: #{full_path}")
-        {:ok, %{storage_path: storage_path, url: url}}
+        {:ok, %{storage_path: storage_path, url: url, content_type: content_type}}
 
       {:error, reason} ->
         Logger.error("Failed to upload file: #{inspect(reason)}")

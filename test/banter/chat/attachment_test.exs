@@ -16,18 +16,27 @@ defmodule Banter.Chat.AttachmentTest do
 
   describe "content_type validation" do
     # Changeset-level only — these run during for_create/3, before anything is
-    # persisted, and don't need the surrounding message. Carried over from the
-    # SVG stored-XSS fix (AUDIT_FINDINGS.md #8), which is why the allowlist
-    # exists at all.
+    # persisted, and don't need the surrounding message. The allowlist exists
+    # because SVG is XML that can carry <script> and attachments are served
+    # same-origin.
+    #
+    # The stored path's extension is derived from the content type rather than
+    # hardcoded: the two have to agree, so a fixture that pinned ".png" for
+    # every type would be quietly invalid for three of the four — and the
+    # acceptance test below would assert nothing.
     defp changeset(content_type) do
+      ext = Banter.Storage.extension_for(content_type) || ".png"
+
       Ash.Changeset.for_create(Attachment, :create, %{
-        filename: "photo.png",
+        filename: "photo#{ext}",
         size: 1024,
         content_type: content_type,
-        storage_path: "servers/a/channels/b/c.png",
-        url: "/uploads/servers/a/channels/b/c.png"
+        storage_path: "servers/a/channels/b/c#{ext}",
+        url: "/uploads/servers/a/channels/b/c#{ext}"
       })
     end
+
+    defp any_error?(changeset), do: changeset.errors != []
 
     defp content_type_error?(changeset) do
       Enum.any?(changeset.errors, fn error ->
@@ -37,8 +46,59 @@ defmodule Banter.Chat.AttachmentTest do
 
     test "accepts the raster image formats" do
       for type <- ~w(image/jpeg image/png image/gif image/webp) do
-        refute content_type_error?(changeset(type)), "expected #{type} to be accepted"
+        refute any_error?(changeset(type)), "expected #{type} to be accepted outright"
       end
+    end
+
+    test "accepts either legitimate JPEG extension" do
+      # .jpeg and .jpg both resolve to image/jpeg, and Plug.Static serves both
+      # correctly, so both must be accepted. Comparing against a single
+      # canonical extension would reject .jpeg — including records written
+      # before this validation existed.
+      for path <- ["servers/a/channels/b/c.jpg", "servers/a/channels/b/c.jpeg"] do
+        changeset =
+          Ash.Changeset.for_create(Attachment, :create, %{
+            filename: Path.basename(path),
+            size: 1024,
+            content_type: "image/jpeg",
+            storage_path: path,
+            url: "/uploads/" <> path
+          })
+
+        refute any_error?(changeset), "expected #{path} to be accepted for image/jpeg"
+      end
+    end
+
+    test "rejects a path with no extension, which would be served as octet-stream" do
+      changeset =
+        Ash.Changeset.for_create(Attachment, :create, %{
+          filename: "photo",
+          size: 1024,
+          content_type: "image/png",
+          storage_path: "servers/a/channels/b/c",
+          url: "/uploads/servers/a/channels/b/c"
+        })
+
+      assert any_error?(changeset)
+    end
+
+    test "the stored path's extension must match the content type" do
+      # Plug.Static types the response from the extension on disk, so a record
+      # claiming one thing while pointing at another would be served as the
+      # other.
+      mismatched =
+        Ash.Changeset.for_create(Attachment, :create, %{
+          filename: "photo.png",
+          size: 1024,
+          content_type: "image/png",
+          storage_path: "servers/a/channels/b/c.gif",
+          url: "/uploads/servers/a/channels/b/c.gif"
+        })
+
+      assert Enum.any?(mismatched.errors, fn e ->
+               Map.get(e, :field) == :storage_path or
+                 :storage_path in Map.get(e, :fields, [])
+             end)
     end
 
     test "rejects image/svg+xml even though it matches an image/* prefix" do

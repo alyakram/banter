@@ -211,7 +211,7 @@ defmodule BanterWeb.ChatLive do
 
     if (has_content || has_uploads) && socket.assigns.current_channel && socket.assigns.current_server do
       # Consume uploaded files
-      attachment_data =
+      results =
         consume_uploaded_entries(socket, :attachments, fn %{path: path}, entry ->
           server_id = socket.assigns.current_server.id
           channel_id = socket.assigns.current_channel.id
@@ -226,39 +226,69 @@ defmodule BanterWeb.ChatLive do
                ) do
             {:ok, result} ->
               {:ok,
-               %{
-                 filename: entry.client_name,
-                 size: entry.client_size,
-                 content_type: entry.client_type,
-                 storage_path: result.storage_path,
-                 url: result.url
-               }}
+               {:uploaded,
+                %{
+                  filename: entry.client_name,
+                  size: entry.client_size,
+                  # The type Storage detected from the file's bytes, not
+                  # entry.client_type — the browser's claim isn't authoritative,
+                  # and the record should say what the file actually is.
+                  content_type: result.content_type,
+                  storage_path: result.storage_path,
+                  url: result.url
+                }}}
 
+            # Rejected for what it *is* — retrying uploads the same bytes and
+            # fails identically. Consume it (`{:ok, _}` clears the entry) so it
+            # doesn't sit in the composer forever, and tell the user why.
+            {:error, reason} when reason in [:unsupported_content_type, :content_type_mismatch] ->
+              {:ok, {:rejected, entry.client_name}}
+
+            # Something environmental — a failed copy, say. Keep the entry so
+            # the next send can retry it.
             {:error, _reason} ->
-              {:postpone, :error}
+              {:postpone, {:failed, entry.client_name}}
           end
         end)
-        # A postponed entry still returns its value here, so drop the :error
-        # atoms rather than passing them on as if they were attachments.
-        # Reachable when Storage rejects an unsupported content type.
-        |> Enum.filter(&is_map/1)
+
+      attachment_data = for {:uploaded, attachment} <- results, do: attachment
+      rejected = for {:rejected, name} <- results, do: name
+
+      socket =
+        if rejected == [] do
+          socket
+        else
+          put_flash(
+            socket,
+            :error,
+            "Couldn't attach #{Enum.join(rejected, ", ")} — the file isn't a supported image."
+          )
+        end
 
       reply_to_id = socket.assigns.replying_to && socket.assigns.replying_to.id
 
-      # Send message with attachment data
-      case GuildServer.send_message_with_attachments(
-             socket.assigns.current_server.id,
-             socket.assigns.current_channel.id,
-             socket.assigns.current_user.id,
-             content,
-             attachment_data,
-             reply_to_id: reply_to_id
-           ) do
-        {:ok, _message} ->
-          {:noreply, socket |> assign(:message_input, "") |> assign(:replying_to, nil)}
+      if content == "" and attachment_data == [] do
+        # Nothing survived to post: the only attachments were rejected and
+        # there was no text. Sending would fail the "content or attachments"
+        # validation and replace the specific rejection flash above with a
+        # generic "Failed to send message".
+        {:noreply, socket}
+      else
+        # Send message with attachment data
+        case GuildServer.send_message_with_attachments(
+               socket.assigns.current_server.id,
+               socket.assigns.current_channel.id,
+               socket.assigns.current_user.id,
+               content,
+               attachment_data,
+               reply_to_id: reply_to_id
+             ) do
+          {:ok, _message} ->
+            {:noreply, socket |> assign(:message_input, "") |> assign(:replying_to, nil)}
 
-        {:error, _} ->
-          {:noreply, put_flash(socket, :error, "Failed to send message")}
+          {:error, _} ->
+            {:noreply, put_flash(socket, :error, "Failed to send message")}
+        end
       end
     else
       {:noreply, socket}

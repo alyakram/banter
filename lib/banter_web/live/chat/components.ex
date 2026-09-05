@@ -556,7 +556,6 @@ defmodule BanterWeb.ChatLive.Components do
   attr :current_channel, :map, default: nil
   attr :messages, :list, default: []
   attr :message_input, :string, default: ""
-  attr :online_users, :map, default: %{}
   attr :uploads, :map, required: true
   attr :has_more_messages, :boolean, default: false
   attr :loading_more_messages, :boolean, default: false
@@ -990,7 +989,7 @@ defmodule BanterWeb.ChatLive.Components do
   """
   attr :current_server, :map, default: nil
   attr :members, :list, default: []
-  attr :online_users, :map, default: %{}
+  attr :connected_users, :any, default: %MapSet{}
 
   def members_sidebar(assigns) do
     ~H"""
@@ -1000,7 +999,7 @@ defmodule BanterWeb.ChatLive.Components do
           Members — <%= length(@members) %>
         </h4>
         <%= for member <- @members do %>
-          <.member_item member={member} online_users={@online_users} />
+          <.member_item member={member} connected_users={@connected_users} />
         <% end %>
       </aside>
     <% end %>
@@ -1011,10 +1010,10 @@ defmodule BanterWeb.ChatLive.Components do
   Individual member item.
   """
   attr :member, :map, required: true
-  attr :online_users, :map, required: true
+  attr :connected_users, :any, required: true
 
   def member_item(assigns) do
-    assigns = assign(assigns, :status, user_status(assigns.member.user_id, assigns.online_users))
+    assigns = assign(assigns, :status, user_status(assigns.member, assigns.connected_users))
 
     ~H"""
     <div class="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-base-100 transition-colors cursor-pointer">
@@ -1523,10 +1522,15 @@ defmodule BanterWeb.ChatLive.Components do
     end
   end
 
-  defp user_status(user_id, online_users) do
-    case Map.get(online_users, user_id) do
-      nil -> :offline
-      status -> status
+  # Availability comes from the user record (the database is the source of
+  # truth); presence only says whether they have a live connection. Invisible
+  # users are shown as offline even while connected.
+  defp user_status(member, connected_users) do
+    cond do
+      not MapSet.member?(connected_users, member.user_id) -> :offline
+      is_nil(member.user) -> :offline
+      member.user.availability in [nil, :invisible] -> :offline
+      true -> member.user.availability
     end
   end
 

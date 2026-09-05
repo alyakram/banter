@@ -7,17 +7,30 @@ defmodule BanterWeb.Presence do
   - Multi-node support
   - Graceful handling of network partitions
 
+  ## What this does and does not answer
+
+  Presence answers **who is connected**, and nothing else. A user's
+  availability (`:online`/`:away`/`:dnd`/`:invisible`) lives in the database,
+  on `users.availability`, and is read from the user record — never from a
+  presence meta.
+
+  That split matters because a single user routinely has several tracked
+  entries under the same key: one per open browser tab (`ChatLive.mount/3`)
+  plus one per gateway session (`Banter.Session`). Phoenix promises nothing
+  about the order of those metas. Storing status in them meant the status
+  everyone saw was whichever meta happened to be first, and a change made in
+  one tab left the others stale.
+
   ## Usage
 
       # Track a user when they connect
       Presence.track(self(), "users:online", user_id, %{
         online_at: System.system_time(:second),
-        status: :online,
-        username: user.username
+        email: user.email
       })
 
-      # Get all online users
-      Presence.list("users:online")
+      # Who is currently connected
+      Presence.connected_user_ids()
 
       # Subscribe to presence updates
       Phoenix.PubSub.subscribe(Banter.PubSub, "users:online")
@@ -27,50 +40,20 @@ defmodule BanterWeb.Presence do
     otp_app: :banter,
     pubsub_server: Banter.PubSub
 
-  @doc """
-  Returns a list of all currently online user IDs.
-  Excludes users with :invisible status.
+  @topic "users:online"
 
-  OPTIMIZED: Reads status from Presence metadata instead of database
-  to avoid N+1 query problem. Status is kept in sync by update_status/3.
+  @doc """
+  The ids of every user with at least one live connection, as a `MapSet`.
+
+  Deliberately says nothing about availability. Callers combine this with the
+  user's own `availability` field to decide what to show — a user is rendered
+  offline when they aren't in this set, and also when they are but have set
+  themselves invisible.
   """
-  def online_user_ids do
-    "users:online"
+  def connected_user_ids do
+    @topic
     |> list()
-    |> Enum.filter(fn {_user_id, %{metas: [meta | _]}} ->
-      Map.get(meta, :status, :online) != :invisible
-    end)
-    |> Map.new(fn {user_id, %{metas: [meta | _]}} ->
-      {user_id, Map.get(meta, :status, :online)}
-    end)
-  end
-
-  @doc """
-  Checks if a specific user is online.
-  """
-  def user_online?(user_id) do
-    "users:online"
-    |> list()
-    |> Map.has_key?(user_id)
-  end
-
-  @doc """
-  Gets the presence metadata for a user (status, etc.)
-  """
-  def get_user_presence(user_id) do
-    case list("users:online")[user_id] do
-      nil -> {:error, :not_found}
-      %{metas: [meta | _]} -> {:ok, meta}
-      _ -> {:error, :not_found}
-    end
-  end
-
-  @doc """
-  Updates a user's status (online, away, dnd, invisible).
-  """
-  def update_status(pid, user_id, status) when status in [:online, :away, :dnd, :invisible] do
-    update(pid, "users:online", user_id, fn meta ->
-      Map.put(meta, :status, status)
-    end)
+    |> Map.keys()
+    |> MapSet.new()
   end
 end

@@ -134,10 +134,9 @@ defmodule Banter.Chat.Attachment do
     #
     # Deliberately an allowlist rather than a `String.starts_with?("image/")`
     # prefix check: `image/svg+xml` satisfies that prefix, and SVG is XML that
-    # can embed `<script>`. Since attachments are served same-origin from
-    # /uploads, storing one is stored XSS (AUDIT_FINDINGS.md #8). content_type
-    # arrives from the client (`entry.client_type`), so this is the last line
-    # of defense no matter which call site creates the record.
+    # can embed `<script>`. Attachments are served same-origin from /uploads,
+    # so storing one is stored XSS. This is the last line of defense no matter
+    # which call site creates the record.
     validate fn changeset, _context ->
       content_type = Ash.Changeset.get_attribute(changeset, :content_type)
 
@@ -147,6 +146,36 @@ defmodule Banter.Chat.Attachment do
         {:error,
          field: :content_type,
          message: "must be one of: #{Enum.join(Banter.Storage.allowed_content_types(), ", ")}"}
+      end
+    end
+
+    # ...and the file it points at must be stored under an extension that
+    # resolves to that same type. Plug.Static decides the response
+    # Content-Type from the extension on disk, so a record claiming image/png
+    # while pointing at a .gif would be served as something other than what it
+    # says it is — and what the UI decides to render it as.
+    #
+    # Asks MIME.type/1 rather than comparing against one canonical extension,
+    # because that's the same lookup Plug.Static performs: ".jpeg" and ".jpg"
+    # both resolve to image/jpeg and both are correct, and records predating
+    # this validation may legitimately use either.
+    validate fn changeset, _context ->
+      content_type = Ash.Changeset.get_attribute(changeset, :content_type)
+      storage_path = Ash.Changeset.get_attribute(changeset, :storage_path)
+
+      cond do
+        # The allowlist validation above already reports a missing/bad type.
+        is_nil(content_type) or is_nil(storage_path) ->
+          :ok
+
+        served_as(storage_path) == content_type ->
+          :ok
+
+        true ->
+          {:error,
+           field: :storage_path,
+           message:
+             "would be served as #{served_as(storage_path)}, which doesn't match #{content_type}"}
       end
     end
   end
@@ -207,5 +236,14 @@ defmodule Banter.Chat.Attachment do
     define :list_by_message, args: [:message_id], action: :by_message
     define :update, action: :update
     define :destroy, action: :destroy
+  end
+
+  # The Content-Type Plug.Static will send for a file at this path, derived the
+  # same way Plug.Static derives it: from the extension.
+  defp served_as(storage_path) do
+    storage_path
+    |> Path.extname()
+    |> String.trim_leading(".")
+    |> MIME.type()
   end
 end

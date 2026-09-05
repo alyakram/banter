@@ -843,6 +843,62 @@ defmodule BanterWeb.ChatLiveTest do
       assert Path.extname(attachment.storage_path) == ".png"
     end
 
+    test "a file whose bytes aren't an image is refused, even named and typed as one", %{
+      view: view,
+      user: user,
+      channel: channel
+    } do
+      # LiveView's accept: filter only sees the name and declared type, both of
+      # which say PNG here. The contents are an SVG carrying a script — exactly
+      # the payload the upload allowlist exists to keep out. Only sniffing the
+      # bytes catches it.
+      disguised =
+        file_input(view, "form[phx-submit='send_message']", :attachments, [
+          %{
+            name: "innocent.png",
+            content: ~s|<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>|,
+            type: "image/png"
+          }
+        ])
+
+      render_upload(disguised, "innocent.png")
+      assert render(view) =~ "innocent.png"
+
+      view |> element("form[phx-submit='send_message']") |> render_submit(%{content: "trust me"})
+
+      {:ok, [message]} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: user)
+
+      # The message still posts; the attachment does not.
+      assert message.content == "trust me"
+      assert {:ok, []} = Chat.list_message_attachments(message.id, actor: user)
+
+      # And the rejected file is cleared from the composer rather than sitting
+      # there being silently dropped from every later send. (The accompanying
+      # flash lives in the layout, which isn't part of the LiveView's own
+      # render, so it can't be asserted here.)
+      refute render(view) =~ "innocent.png"
+    end
+
+    test "a rejected file on its own doesn't post an empty message", %{
+      view: view,
+      user: user,
+      channel: channel
+    } do
+      disguised =
+        file_input(view, "form[phx-submit='send_message']", :attachments, [
+          %{name: "bad.png", content: "<svg><script>alert(1)</script></svg>", type: "image/png"}
+        ])
+
+      render_upload(disguised, "bad.png")
+      view |> element("form[phx-submit='send_message']") |> render_submit(%{content: ""})
+
+      # Nothing to post once the attachment is refused, so no message is
+      # written — attempting it would fail the "content or attachments"
+      # validation and bury the real reason under a generic error.
+      assert {:ok, []} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: user)
+      refute render(view) =~ "bad.png"
+    end
+
     test "an upload can be cancelled before sending", %{
       view: view,
       user: user,

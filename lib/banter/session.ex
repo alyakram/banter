@@ -147,22 +147,21 @@ defmodule Banter.Session do
           # regardless of what the client requested
           authorized_guild_ids = member_guild_ids(user, guild_ids)
 
-          # Get user's availability status
-          user_status = user.availability || :online
-
-          # Track user presence
+          # Track user presence. No :status in the meta — this session would
+          # snapshot availability at identify and never update it again, so it
+          # used to hand stale status to anything reading presence metas.
+          # Availability lives on the user record.
           {:ok, _} = Presence.track(
             state.channel_pid,
             "users:online",
             user_id,
             %{
               online_at: System.system_time(:second),
-              status: user_status,
               session_id: state.session_id
             }
           )
 
-          Logger.debug("Tracking presence for user #{user_id} with status #{user_status}")
+          Logger.debug("Tracking presence for user #{user_id}")
 
           # Subscribe to authorized guilds
           new_subscriptions =

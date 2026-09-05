@@ -36,8 +36,10 @@ defmodule BanterWeb.ChatLive do
           "users:online",
           user.id,
           %{
+            # No :status here on purpose — presence tracks connections, and a
+            # user has one of these per tab plus one per gateway session.
+            # Availability comes from the user record.
             online_at: System.system_time(:second),
-            status: user.availability || :online,
             email: user.email
           }
         )
@@ -63,7 +65,7 @@ defmodule BanterWeb.ChatLive do
       |> assign(:messages_cursor, nil)
       |> assign(:has_more_messages, false)
       |> assign(:loading_more_messages, false)
-      |> assign(:online_users, Presence.online_user_ids())
+      |> assign(:connected_users, Presence.connected_user_ids())
       |> assign(:show_status_menu, false)
       |> assign(:voice_states, %{})
       |> assign(:current_voice_channel, nil)
@@ -463,12 +465,16 @@ defmodule BanterWeb.ChatLive do
           "Successfully updated user status to #{status}, new availability: #{updated_user.availability}"
         )
 
-        # Update Presence metadata
-        Presence.update(self(), "users:online", user.id, fn meta ->
-          Map.put(meta, :status, status)
-        end)
-
-        Logger.info("Updated presence for user #{user.id}")
+        # Announce it rather than editing this tab's presence meta. Everyone is
+        # already subscribed to "users:online", and each viewer holds the
+        # user's availability on the record it already has — including this
+        # user's *other* tabs, whose own footer would otherwise stay stale.
+        # Same shape as the {:user_avatar_updated, ...} broadcast above.
+        Phoenix.PubSub.broadcast(
+          Banter.PubSub,
+          "users:online",
+          {:user_status_updated, user.id, status}
+        )
 
         socket =
           socket
@@ -871,8 +877,36 @@ defmodule BanterWeb.ChatLive do
 
   @impl true
   def handle_info(%Phoenix.Socket.Broadcast{event: "presence_diff"}, socket) do
-    # Update online users list when someone connects/disconnects
-    {:noreply, assign(socket, :online_users, Presence.online_user_ids())}
+    # Who is connected changed. Availability isn't touched here — it lives on
+    # the user records this view already holds.
+    {:noreply, assign(socket, :connected_users, Presence.connected_user_ids())}
+  end
+
+  @impl true
+  def handle_info({:user_status_updated, user_id, status}, socket) do
+    socket =
+      socket
+      |> update(:members, fn members ->
+        Enum.map(members, fn member ->
+          if member.user_id == user_id && member.user do
+            %{member | user: %{member.user | availability: status}}
+          else
+            member
+          end
+        end)
+      end)
+
+    # If that was us, this is one of our own other tabs: the footer renders
+    # @current_user.availability, so without this it would keep showing the
+    # old status until remount.
+    socket =
+      if socket.assigns[:current_user] && socket.assigns.current_user.id == user_id do
+        assign(socket, :current_user, %{socket.assigns.current_user | availability: status})
+      else
+        socket
+      end
+
+    {:noreply, socket}
   end
 
   # ── Voice WebRTC signaling (server → browser) ───────────────────────
@@ -1155,7 +1189,6 @@ defmodule BanterWeb.ChatLive do
         current_channel={@current_channel}
         messages={@messages}
         message_input={@message_input}
-        online_users={@online_users}
         uploads={@uploads}
         has_more_messages={@has_more_messages}
         loading_more_messages={@loading_more_messages}
@@ -1171,7 +1204,7 @@ defmodule BanterWeb.ChatLive do
       <Components.members_sidebar
         current_server={@current_server}
         members={@members}
-        online_users={@online_users}
+        connected_users={@connected_users}
       />
 
       <%!-- Voice WebRTC (hidden, audio only) --%>

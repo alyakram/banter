@@ -47,10 +47,27 @@ defmodule Banter.GuildServer do
         {:ok, pid}
 
       [] ->
-        DynamicSupervisor.start_child(
-          Banter.GuildSupervisor,
-          {__MODULE__, server_id}
-        )
+        start_guild(server_id)
+    end
+  end
+
+  defp start_guild(server_id) do
+    case DynamicSupervisor.start_child(Banter.GuildSupervisor, {__MODULE__, server_id}) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      # Lost a race with another first caller: between our Registry.lookup
+      # returning [] and this start_child, someone else started the process.
+      # That's the outcome we wanted — the caller asked for a running guild,
+      # not for the privilege of having started it. Without this, the loser
+      # got a raw {:error, {:already_started, pid}} back, and since every
+      # caller here opens with `with {:ok, _pid} <- ensure_started(...)` and no
+      # else clause, that surfaced from the public API as a spurious failure.
+      {:error, {:already_started, pid}} ->
+        {:ok, pid}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

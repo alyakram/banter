@@ -35,10 +35,26 @@ defmodule Banter.Voice.Room do
         {:ok, pid}
 
       [] ->
-        DynamicSupervisor.start_child(
-          Banter.VoiceRoomSupervisor,
-          {__MODULE__, channel_id: channel_id}
-        )
+        start_room(channel_id)
+    end
+  end
+
+  defp start_room(channel_id) do
+    case DynamicSupervisor.start_child(
+           Banter.VoiceRoomSupervisor,
+           {__MODULE__, channel_id: channel_id}
+         ) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      # Lost a race with another first caller — see the equivalent note in
+      # Banter.GuildServer. Two people clicking the same voice channel at once
+      # is the ordinary way to hit this, and the loser must still get the room.
+      {:error, {:already_started, pid}} ->
+        {:ok, pid}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

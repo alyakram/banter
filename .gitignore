@@ -41,3 +41,11 @@ discord_clone-*.tar
 npm-debug.log
 /assets/node_modules/
 
+
+# Local working notes — PR write-ups, audit tracker, drafts. Not part of the repo.
+/notes/
+
+# TLS certs and keys — self-signed dev material, never commit private keys
+*.pem
+*.cer
+/priv/cert/

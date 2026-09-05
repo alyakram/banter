@@ -35,4 +35,17 @@ defmodule BanterWeb.ConnCase do
     Banter.DataCase.setup_sandbox(tags)
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
+
+  @doc """
+  Puts `user` into the connection's session so LiveViews mounted from it pass
+  the `:live_user_required` on_mount hook.
+
+  `Plug.Test.init_test_session/2` is needed first: `build_conn/0` has no session
+  yet, and `store_in_session/2` writes into one.
+  """
+  def log_in_user(conn, user) do
+    conn
+    |> Plug.Test.init_test_session(%{})
+    |> AshAuthentication.Plug.Helpers.store_in_session(user)
+  end
 end

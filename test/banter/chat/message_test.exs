@@ -378,6 +378,96 @@ defmodule Banter.Chat.MessageTest do
     end
   end
 
+  describe "moderation by the server owner" do
+    # The owner of the server a message lives in can pin, unpin and remove it,
+    # even when they didn't write it — those are moderation actions. Editing
+    # the text is not, and stays strictly with the author.
+    #
+    # Note this is keyed on Server.owner_id, not Member.role: nothing in the
+    # app can grant :admin or :moderator (join forces :member and update won't
+    # accept a role), and server owners are plain :member rows, so owner_id is
+    # the only elevated permission that actually exists.
+    setup %{author: owner, server: server, channel: channel} do
+      poster = user_fixture()
+      member_fixture(poster, server)
+
+      {:ok, message} =
+        send_message(message_attrs(channel, poster, %{content: "someone else's words"}),
+          actor: poster
+        )
+
+      %{owner: owner, poster: poster, message: message}
+    end
+
+    test "the owner can pin a message they didn't write", %{owner: owner, message: message} do
+      assert {:ok, pinned} = pin(message, owner)
+      assert pinned.pinned == true
+    end
+
+    test "the owner can unpin a message they didn't write", %{
+      owner: owner,
+      poster: poster,
+      message: message
+    } do
+      {:ok, pinned} = pin(message, poster)
+
+      assert {:ok, unpinned} =
+               pinned |> Ash.Changeset.for_update(:unpin, %{}) |> Ash.update(actor: owner)
+
+      assert unpinned.pinned == false
+    end
+
+    test "the owner can delete a message they didn't write", %{
+      owner: owner,
+      channel: channel,
+      message: message
+    } do
+      assert {:ok, archived} = Ash.destroy(message, actor: owner)
+      assert archived.archived_at
+
+      assert {:ok, []} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: owner)
+    end
+
+    test "the owner still cannot edit someone else's words", %{owner: owner, message: message} do
+      # The line this change deliberately does not cross: moderating a message
+      # is not the same as rewriting it.
+      assert {:error, %Ash.Error.Forbidden{}} =
+               message
+               |> Ash.Changeset.for_update(:update, %{content: "words I put in your mouth"})
+               |> Ash.update(actor: owner)
+    end
+
+    test "an ordinary member still cannot pin or delete someone else's message", %{
+      server: server,
+      message: message
+    } do
+      bystander = user_fixture()
+      member_fixture(bystander, server)
+
+      assert {:error, %Ash.Error.Forbidden{}} = pin(message, bystander)
+      assert {:error, %Ash.Error.Forbidden{}} = Ash.destroy(message, actor: bystander)
+    end
+
+    test "the owner of a different server has no say", %{message: message} do
+      other_owner = user_fixture()
+      {_their_server, _} = server_with_owner_fixture(other_owner)
+
+      assert {:error, %Ash.Error.Forbidden{}} = pin(message, other_owner)
+      assert {:error, %Ash.Error.Forbidden{}} = Ash.destroy(message, actor: other_owner)
+    end
+
+    test "the author retains all of it", %{poster: poster, message: message} do
+      assert {:ok, pinned} = pin(message, poster)
+
+      assert {:ok, _} =
+               pinned
+               |> Ash.Changeset.for_update(:update, %{content: "my own edit"})
+               |> Ash.update(actor: poster)
+
+      assert {:ok, _} = Ash.destroy(pinned, actor: poster)
+    end
+  end
+
   describe "pin and unpin" do
     setup %{author: author, channel: channel} do
       {:ok, message} = send_message(message_attrs(channel, author), actor: author)

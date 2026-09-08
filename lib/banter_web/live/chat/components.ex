@@ -566,6 +566,9 @@ defmodule BanterWeb.ChatLive.Components do
   attr :selected_message_id, :string, default: nil
   attr :replying_to, :map, default: nil
   attr :typing_users, :map, default: %{}
+  # Whether the viewer may moderate messages here — the server's owner can
+  # remove other people's, though never edit them.
+  attr :can_moderate, :boolean, default: false
 
   def chat_area(assigns) do
     ~H"""
@@ -582,6 +585,7 @@ defmodule BanterWeb.ChatLive.Components do
           editing_content={@editing_content}
           confirming_delete_id={@confirming_delete_id}
           selected_message_id={@selected_message_id}
+          can_moderate={@can_moderate}
         />
         <.message_input channel={@current_channel} message_input={@message_input} uploads={@uploads} replying_to={@replying_to} typing_users={@typing_users} />
       <% else %>
@@ -637,6 +641,7 @@ defmodule BanterWeb.ChatLive.Components do
   attr :editing_content, :string, default: ""
   attr :confirming_delete_id, :string, default: nil
   attr :selected_message_id, :string, default: nil
+  attr :can_moderate, :boolean, default: false
 
   def message_feed(assigns) do
     ~H"""
@@ -671,6 +676,7 @@ defmodule BanterWeb.ChatLive.Components do
               editing_content={@editing_content}
               confirming_delete_id={@confirming_delete_id}
               selected_message_id={@selected_message_id}
+              can_moderate={@can_moderate}
             />
           <% else %>
             <.message_compact
@@ -680,6 +686,7 @@ defmodule BanterWeb.ChatLive.Components do
               editing_content={@editing_content}
               confirming_delete_id={@confirming_delete_id}
               selected_message_id={@selected_message_id}
+              can_moderate={@can_moderate}
             />
           <% end %>
         <% end %>
@@ -719,6 +726,7 @@ defmodule BanterWeb.ChatLive.Components do
   attr :editing_content, :string, default: ""
   attr :confirming_delete_id, :string, default: nil
   attr :selected_message_id, :string, default: nil
+  attr :can_moderate, :boolean, default: false
 
   def message_full(assigns) do
     ~H"""
@@ -775,7 +783,7 @@ defmodule BanterWeb.ChatLive.Components do
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
             </svg>
           </button>
-          <%= if @current_user && @message.author_id == @current_user.id do %>
+          <%= if @current_user && (@message.author_id == @current_user.id || @can_moderate) do %>
             <div class="relative">
               <button
                 phx-click="select_message"
@@ -788,7 +796,10 @@ defmodule BanterWeb.ChatLive.Components do
                 </svg>
               </button>
               <%= if @message.id == @selected_message_id do %>
-                <.message_action_menu message={@message} />
+                <.message_action_menu
+                  message={@message}
+                  can_edit={!!(@current_user && @message.author_id == @current_user.id)}
+                />
               <% end %>
             </div>
           <% end %>
@@ -807,6 +818,7 @@ defmodule BanterWeb.ChatLive.Components do
   attr :editing_content, :string, default: ""
   attr :confirming_delete_id, :string, default: nil
   attr :selected_message_id, :string, default: nil
+  attr :can_moderate, :boolean, default: false
 
   def message_compact(assigns) do
     ~H"""
@@ -855,7 +867,7 @@ defmodule BanterWeb.ChatLive.Components do
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
             </svg>
           </button>
-          <%= if @current_user && @message.author_id == @current_user.id do %>
+          <%= if @current_user && (@message.author_id == @current_user.id || @can_moderate) do %>
             <div class="relative">
               <button
                 phx-click="select_message"
@@ -868,7 +880,10 @@ defmodule BanterWeb.ChatLive.Components do
                 </svg>
               </button>
               <%= if @message.id == @selected_message_id do %>
-                <.message_action_menu message={@message} />
+                <.message_action_menu
+                  message={@message}
+                  can_edit={!!(@current_user && @message.author_id == @current_user.id)}
+                />
               <% end %>
             </div>
           <% end %>
@@ -1392,6 +1407,9 @@ defmodule BanterWeb.ChatLive.Components do
   end
 
   attr :message, :map, required: true
+  # Editing is the author's alone; a moderator opening this menu on someone
+  # else's message sees only Delete.
+  attr :can_edit, :boolean, default: false
 
   defp message_action_menu(assigns) do
     ~H"""
@@ -1400,16 +1418,18 @@ defmodule BanterWeb.ChatLive.Components do
       class="absolute right-0 top-full mt-1 w-32 bg-base-300 border border-neutral rounded-xl shadow-xl z-20 py-1 overflow-hidden"
       phx-click-away="deselect_message"
     >
-      <button
-        phx-click="start_edit"
-        phx-value-id={@message.id}
-        class="w-full flex items-center gap-2 px-3 py-2 text-sm text-base-content hover:bg-neutral transition-colors text-left"
-      >
-        <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-        </svg>
-        Edit
-      </button>
+      <%= if @can_edit do %>
+        <button
+          phx-click="start_edit"
+          phx-value-id={@message.id}
+          class="w-full flex items-center gap-2 px-3 py-2 text-sm text-base-content hover:bg-neutral transition-colors text-left"
+        >
+          <svg class="w-3.5 h-3.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          Edit
+        </button>
+      <% end %>
       <button
         phx-click="confirm_delete"
         phx-value-id={@message.id}

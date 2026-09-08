@@ -416,6 +416,109 @@ defmodule BanterWeb.ChatLiveTest do
     end
   end
 
+  describe "moderation controls in the UI" do
+    setup %{conn: conn} do
+      ctx = signed_in_with_server(conn)
+      poster = user_fixture()
+      member_fixture(poster, ctx.server)
+      message = message_fixture(ctx.channel, poster, %{content: "someone else's words"})
+
+      Map.merge(ctx, %{poster: poster, message: message})
+    end
+
+    test "the server owner sees a delete control on someone else's message", %{
+      conn: conn,
+      server: server,
+      channel: channel,
+      message: message
+    } do
+      {:ok, view, _} = live(conn, ~p"/chat/#{server.id}/#{channel.id}")
+
+      html = render_click(view, "select_message", %{"id" => message.id})
+
+      assert html =~ "confirm_delete"
+    end
+
+    test "but no edit control — moderating isn't rewriting", %{
+      conn: conn,
+      server: server,
+      channel: channel,
+      message: message
+    } do
+      {:ok, view, _} = live(conn, ~p"/chat/#{server.id}/#{channel.id}")
+
+      html = render_click(view, "select_message", %{"id" => message.id})
+
+      refute html =~ "start_edit"
+    end
+
+    test "and can actually delete it", %{
+      conn: conn,
+      user: owner,
+      server: server,
+      channel: channel,
+      message: message
+    } do
+      {:ok, view, _} = live(conn, ~p"/chat/#{server.id}/#{channel.id}")
+
+      render_hook(view, "delete_message", %{"id" => message.id})
+
+      assert {:ok, []} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: owner)
+    end
+
+    test "hiding the edit control isn't the real boundary — a crafted edit is refused", %{
+      conn: conn,
+      server: server,
+      channel: channel,
+      message: message,
+      user: owner
+    } do
+      # The UI omits Edit for a moderator, but that's cosmetic. Anyone can send
+      # the event anyway, so the policy has to be what actually stops it.
+      {:ok, view, _} = live(conn, ~p"/chat/#{server.id}/#{channel.id}")
+
+      render_hook(view, "start_edit", %{"id" => message.id})
+      render_hook(view, "save_edit", %{"message_id" => message.id, "content" => "forced"})
+
+      {:ok, reloaded} = Chat.get_message(message.id, actor: owner)
+      assert reloaded.content == "someone else's words"
+      assert Process.alive?(view.pid)
+    end
+
+    test "an ordinary member sees no controls on someone else's message", %{
+      conn: conn,
+      server: server,
+      channel: channel,
+      message: message
+    } do
+      bystander = user_fixture()
+      member_fixture(bystander, server)
+
+      {:ok, view, _} =
+        live(log_in_user(conn, bystander), ~p"/chat/#{server.id}/#{channel.id}")
+
+      html = render_click(view, "select_message", %{"id" => message.id})
+
+      refute html =~ "confirm_delete"
+      refute html =~ "start_edit"
+    end
+
+    test "an author still sees both controls on their own message", %{
+      conn: conn,
+      poster: poster,
+      server: server,
+      channel: channel,
+      message: message
+    } do
+      {:ok, view, _} = live(log_in_user(conn, poster), ~p"/chat/#{server.id}/#{channel.id}")
+
+      html = render_click(view, "select_message", %{"id" => message.id})
+
+      assert html =~ "confirm_delete"
+      assert html =~ "start_edit"
+    end
+  end
+
   describe "status and avatar" do
     setup %{conn: conn} do
       ctx = signed_in_with_server(conn)

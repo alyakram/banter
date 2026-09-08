@@ -1220,6 +1220,7 @@ defmodule BanterWeb.ChatLive do
         messages={@messages}
         message_input={@message_input}
         uploads={@uploads}
+        can_moderate={!!(@current_server && @current_user && @current_server.owner_id == @current_user.id)}
         has_more_messages={@has_more_messages}
         loading_more_messages={@loading_more_messages}
         current_user={@current_user}

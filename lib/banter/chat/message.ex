@@ -135,12 +135,24 @@ defmodule Banter.Chat.Message do
       authorize_if Banter.Chat.Checks.ActorIsChannelMember
     end
 
-    policy action([:update, :pin, :unpin]) do
+    # Editing stays strictly with the author. Moderating a message is one
+    # thing; rewriting what somebody said is another, and no permission level
+    # here grants it.
+    policy action(:update) do
       authorize_if expr(author_id == ^actor(:id))
     end
 
-    policy action(:destroy) do
+    # Pinning and removing are moderation, so the owner of the server the
+    # message lives in can do them too (the two authorize_ifs are an OR).
+    #
+    # Keyed on Server.owner_id rather than Member.role deliberately: nothing in
+    # the app can grant :admin or :moderator — joining forces :member and the
+    # update action won't accept a role — and even server owners are plain
+    # :member rows. owner_id is the only elevated permission that actually
+    # exists, so gating on roles here would be machinery that never fires.
+    policy action([:pin, :unpin, :destroy]) do
       authorize_if expr(author_id == ^actor(:id))
+      authorize_if expr(channel.server.owner_id == ^actor(:id))
     end
   end
 

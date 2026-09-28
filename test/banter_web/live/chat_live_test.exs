@@ -1249,6 +1249,63 @@ defmodule BanterWeb.ChatLiveTest do
       assert render(view) =~ "Somebody"
     end
 
+    test "a later typing event outlives the earlier one's expiry", %{
+      view: view,
+      channel: channel
+    } do
+      other = user_fixture()
+      typing = {:guild_event, {:typing, other.id, "Still Typing", channel.id}}
+
+      send(view.pid, typing)
+      render(view)
+      first_token = :sys.get_state(view.pid).socket.assigns.typing_tokens[other.id]
+
+      send(view.pid, typing)
+      render(view)
+      latest_token = :sys.get_state(view.pid).socket.assigns.typing_tokens[other.id]
+
+      # The first event's expiry arrives while they're still typing. It used
+      # to clear the indicator anyway.
+      send(view.pid, {:typing_expired, other.id, first_token})
+      assert render(view) =~ "Still Typing is typing"
+
+      send(view.pid, {:typing_expired, other.id, latest_token})
+      refute render(view) =~ "Still Typing is typing"
+    end
+
+    test "someone's message clears their typing indicator", %{
+      view: view,
+      server: server,
+      channel: channel
+    } do
+      other = user_fixture()
+      member_fixture(other, server)
+
+      send(view.pid, {:guild_event, {:typing, other.id, "Quick Sender", channel.id}})
+      assert render(view) =~ "Quick Sender is typing"
+
+      {:ok, _} = Banter.GuildServer.send_message(server.id, channel.id, other.id, "done")
+
+      refute render(view) =~ "Quick Sender is typing"
+    end
+
+    test "switching channels clears the indicators", %{
+      view: view,
+      user: user,
+      server: server,
+      channel: channel
+    } do
+      other = user_fixture()
+      elsewhere = channel_fixture(server, user, %{name: "elsewhere"})
+
+      send(view.pid, {:guild_event, {:typing, other.id, "Left Behind", channel.id}})
+      assert render(view) =~ "Left Behind is typing"
+
+      render_click(view, "select_channel", %{"id" => elsewhere.id})
+
+      refute render(view) =~ "Left Behind is typing"
+    end
+
     test "your own typing event is ignored", %{view: view, user: user, channel: channel} do
       send(view.pid, {:guild_event, {:typing, user.id, "Me Myself", channel.id}})
 
@@ -1270,6 +1327,94 @@ defmodule BanterWeb.ChatLiveTest do
       send(view.pid, {:something_unexpected, :entirely})
 
       assert render(view)
+    end
+  end
+
+  describe "announcing typing" do
+    setup %{conn: conn} do
+      ctx = signed_in_with_server(conn)
+      {:ok, view, _html} = live(ctx.conn, ~p"/chat/#{ctx.server.id}/#{ctx.channel.id}")
+
+      # Watch the guild topic the way every other member's view does.
+      Phoenix.PubSub.subscribe(Banter.PubSub, "guild:#{ctx.server.id}")
+
+      Map.put(ctx, :view, view)
+    end
+
+    # The broadcast happens inside the event handler, so it's already in the
+    # mailbox by the time render_hook returns.
+    defp typed(view), do: render_hook(view, "typing", %{})
+
+    test "the first typing event is broadcast, and a burst after it is not", %{
+      view: view,
+      user: user,
+      channel: channel
+    } do
+      typed(view)
+      assert_received {:guild_event, {:typing, user_id, _name, channel_id}}
+      assert {user_id, channel_id} == {user.id, channel.id}
+
+      for _ <- 1..5, do: typed(view)
+      refute_received {:guild_event, {:typing, _, _, _}}
+    end
+
+    test "once the interval has passed, the next one is broadcast", %{view: view, channel: channel} do
+      typed(view)
+      assert_received {:guild_event, {:typing, _, _, _}}
+
+      # Move the last broadcast back in time rather than sleeping through
+      # the interval.
+      :sys.replace_state(view.pid, fn state ->
+        long_ago = System.monotonic_time(:millisecond) - 60_000
+        put_in(state.socket.assigns.typing_sent, {channel.id, long_ago})
+      end)
+
+      typed(view)
+      assert_received {:guild_event, {:typing, _, _, _}}
+    end
+
+    test "sending a message ends the bout, so the next keystroke announces at once", %{
+      view: view
+    } do
+      typed(view)
+      assert_received {:guild_event, {:typing, _, _, _}}
+
+      view |> element("form[phx-submit='send_message']") |> render_submit(%{content: "sent"})
+
+      typed(view)
+      assert_received {:guild_event, {:typing, _, _, _}}
+    end
+
+    test "typing in another channel isn't held back by this one", %{
+      view: view,
+      user: user,
+      server: server
+    } do
+      other = channel_fixture(server, user, %{name: "other"})
+
+      typed(view)
+      assert_received {:guild_event, {:typing, _, _, _}}
+
+      render_click(view, "select_channel", %{"id" => other.id})
+      typed(view)
+
+      assert_received {:guild_event, {:typing, _, _, other_id}}
+      assert other_id == other.id
+    end
+
+    test "keystrokes themselves no longer broadcast anything", %{view: view} do
+      for text <- ["h", "he", "hel", "hell", "hello"] do
+        render_hook(view, "update_message_input", %{"content" => text})
+      end
+
+      refute_received {:guild_event, {:typing, _, _, _}}
+    end
+
+    test "the composer announces through the hook and debounces the text", %{view: view} do
+      assert has_element?(
+               view,
+               ~s(#message-input[phx-hook="TypingSignal"][phx-debounce="300"][phx-change="update_message_input"])
+             )
     end
   end
 

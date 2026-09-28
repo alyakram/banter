@@ -1017,11 +1017,18 @@ defmodule BanterWeb.ChatLive.Components do
         </button>
         <.live_file_input upload={@uploads.attachments} class="hidden" id={@uploads.attachments.ref} />
 
+        <%!-- Two separate signals: phx-change keeps the server's copy of the
+             text (debounced — it fires on a pause, and on blur and submit), and
+             the TypingSignal hook announces typing on the first keystroke. A
+             debounce alone would hold "is typing" back until the typist paused. --%>
         <input
           type="text"
+          id="message-input"
           name="content"
           value={@message_input}
           phx-change="update_message_input"
+          phx-debounce="300"
+          phx-hook="TypingSignal"
           placeholder={"Message ##{@channel.name}"}
           autocomplete="off"
           class="flex-1 bg-transparent border-none outline-none py-3 text-[15px] text-base-content placeholder-base-content/50 focus:ring-0"

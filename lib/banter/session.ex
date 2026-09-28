@@ -177,15 +177,17 @@ defmodule Banter.Session do
             guilds: authorized_guild_ids
           }
 
-          new_state = %{
-            state |
-            user_id: user_id,
-            state: :identified,
-            guild_subscriptions: new_subscriptions,
-            sequence: state.sequence + 1
-          }
-
-          dispatch(new_state, Gateway.event_ready(), ready_data)
+          new_state =
+            dispatch(
+              %{
+                state
+                | user_id: user_id,
+                  state: :identified,
+                  guild_subscriptions: new_subscriptions
+              },
+              Gateway.event_ready(),
+              ready_data
+            )
 
           {:reply, :ok, new_state}
 
@@ -208,8 +210,8 @@ defmodule Banter.Session do
       if state.zombie_timer, do: Process.cancel_timer(state.zombie_timer)
 
       # Send RESUMED event
-      new_state = %{state | state: :identified, zombie_timer: nil}
-      dispatch(new_state, Gateway.event_resumed(), %{})
+      new_state =
+        dispatch(%{state | state: :identified, zombie_timer: nil}, Gateway.event_resumed(), %{})
 
       {:reply, {:ok, sequence}, new_state}
     else
@@ -258,8 +260,7 @@ defmodule Banter.Session do
   @impl true
   def handle_cast({:dispatch_event, event_name, data}, state) do
     if state.state == :identified do
-      dispatch(state, event_name, data)
-      {:noreply, %{state | sequence: state.sequence + 1}}
+      {:noreply, dispatch(state, event_name, data)}
     else
       {:noreply, state}
     end
@@ -312,23 +313,23 @@ defmodule Banter.Session do
 
   @impl true
   def handle_info({:guild_event, event}, state) do
-    # Forward guild events to client if session is identified
+    # Forward guild events to client if session is identified. Events the
+    # gateway doesn't forward (typing, edits, deletes, voice) leave the state —
+    # and so the sequence number — untouched.
     if state.state == :identified do
       case event do
         {:message_create, message} ->
-          dispatch(state, Gateway.event_message_create(), serialize_message(message))
+          {:noreply, dispatch(state, Gateway.event_message_create(), serialize_message(message))}
 
         {:channel_create, channel} ->
-          dispatch(state, Gateway.event_channel_create(), serialize_channel(channel))
+          {:noreply, dispatch(state, Gateway.event_channel_create(), serialize_channel(channel))}
 
         {:member_join, member} ->
-          dispatch(state, Gateway.event_guild_member_add(), serialize_member(member))
+          {:noreply, dispatch(state, Gateway.event_guild_member_add(), serialize_member(member))}
 
         _ ->
-          :ok
+          {:noreply, state}
       end
-
-      {:noreply, %{state | sequence: state.sequence + 1}}
     else
       {:noreply, state}
     end
@@ -363,9 +364,15 @@ defmodule Banter.Session do
     {:via, Registry, {Banter.SessionRegistry, session_id}}
   end
 
+  # Sends a dispatch under the next sequence number and returns the state
+  # carrying it. The only place the number moves: one step per event actually
+  # sent, so a client sees 1, 2, 3… — READY first — with no gaps and no repeats.
+  # Callers used to bump it themselves, which skipped numbers for events that
+  # weren't forwarded and repeated READY's number on the next event.
   defp dispatch(state, event_name, data) do
-    payload = Gateway.dispatch_event(event_name, data, state.sequence)
-    send_payload(state.channel_pid, payload)
+    state = %{state | sequence: state.sequence + 1}
+    send_payload(state.channel_pid, Gateway.dispatch_event(event_name, data, state.sequence))
+    state
   end
 
   defp send_payload(channel_pid, payload) do

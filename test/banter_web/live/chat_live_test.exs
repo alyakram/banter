@@ -1249,6 +1249,63 @@ defmodule BanterWeb.ChatLiveTest do
       assert render(view) =~ "Somebody"
     end
 
+    test "a later typing event outlives the earlier one's expiry", %{
+      view: view,
+      channel: channel
+    } do
+      other = user_fixture()
+      typing = {:guild_event, {:typing, other.id, "Still Typing", channel.id}}
+
+      send(view.pid, typing)
+      render(view)
+      first_token = :sys.get_state(view.pid).socket.assigns.typing_tokens[other.id]
+
+      send(view.pid, typing)
+      render(view)
+      latest_token = :sys.get_state(view.pid).socket.assigns.typing_tokens[other.id]
+
+      # The first event's expiry arrives while they're still typing. It used
+      # to clear the indicator anyway.
+      send(view.pid, {:typing_expired, other.id, first_token})
+      assert render(view) =~ "Still Typing is typing"
+
+      send(view.pid, {:typing_expired, other.id, latest_token})
+      refute render(view) =~ "Still Typing is typing"
+    end
+
+    test "someone's message clears their typing indicator", %{
+      view: view,
+      server: server,
+      channel: channel
+    } do
+      other = user_fixture()
+      member_fixture(other, server)
+
+      send(view.pid, {:guild_event, {:typing, other.id, "Quick Sender", channel.id}})
+      assert render(view) =~ "Quick Sender is typing"
+
+      {:ok, _} = Banter.GuildServer.send_message(server.id, channel.id, other.id, "done")
+
+      refute render(view) =~ "Quick Sender is typing"
+    end
+
+    test "switching channels clears the indicators", %{
+      view: view,
+      user: user,
+      server: server,
+      channel: channel
+    } do
+      other = user_fixture()
+      elsewhere = channel_fixture(server, user, %{name: "elsewhere"})
+
+      send(view.pid, {:guild_event, {:typing, other.id, "Left Behind", channel.id}})
+      assert render(view) =~ "Left Behind is typing"
+
+      render_click(view, "select_channel", %{"id" => elsewhere.id})
+
+      refute render(view) =~ "Left Behind is typing"
+    end
+
     test "your own typing event is ignored", %{view: view, user: user, channel: channel} do
       send(view.pid, {:guild_event, {:typing, user.id, "Me Myself", channel.id}})
 

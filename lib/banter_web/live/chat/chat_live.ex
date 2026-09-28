@@ -21,6 +21,12 @@ defmodule BanterWeb.ChatLive do
   alias Banter.{Chat, GuildServer, Voice}
   alias BanterWeb.Presence
   alias BanterWeb.ChatLive.{Components, Feed}
+
+  # How long "X is typing…" stays up after the last typing event from X. It
+  # must outlast the gap between events from someone still typing, so their
+  # indicator doesn't blink off between them.
+  @typing_ttl 5_000
+
   @impl true
   def mount(_params, _session, socket) do
     # Subscribe to presence updates and track user as online
@@ -77,6 +83,7 @@ defmodule BanterWeb.ChatLive do
       |> assign(:selected_message_id, nil)
       |> assign(:replying_to, nil)
       |> assign(:typing_users, %{})
+      |> assign(:typing_tokens, %{})
       |> assign(:show_avatar_picker, false)
       |> allow_upload(:attachments,
         # No .svg — it's XML that can carry <script>, and uploads are served
@@ -778,8 +785,11 @@ defmodule BanterWeb.ChatLive do
     # Only add message if it's for the current channel
     if socket.assigns.current_channel && message.channel_id == socket.assigns.current_channel.id do
       # Appended, trimmed around, or held below a detached feed — depending on
-      # where the reader is.
-      {:noreply, Feed.live_message(socket, message)}
+      # where the reader is. The author has stopped typing: they just sent it.
+      {:noreply,
+       socket
+       |> Feed.live_message(message)
+       |> stop_typing(message.author_id)}
     else
       {:noreply, socket}
     end
@@ -999,16 +1009,29 @@ defmodule BanterWeb.ChatLive do
     if user_id != current_user_id &&
          socket.assigns.current_channel &&
          socket.assigns.current_channel.id == channel_id do
-      Process.send_after(self(), {:clear_typing, user_id}, 3000)
-      {:noreply, update(socket, :typing_users, &Map.put(&1, user_id, name))}
+      # Each event restarts the user's expiry. The token is how an expiry
+      # knows it's still the latest: without it, the first event's timer
+      # cleared the indicator while the user was still typing.
+      token = make_ref()
+      Process.send_after(self(), {:typing_expired, user_id, token}, @typing_ttl)
+
+      {:noreply,
+       socket
+       |> update(:typing_users, &Map.put(&1, user_id, name))
+       |> update(:typing_tokens, &Map.put(&1, user_id, token))}
     else
       {:noreply, socket}
     end
   end
 
   @impl true
-  def handle_info({:clear_typing, user_id}, socket) do
-    {:noreply, update(socket, :typing_users, &Map.delete(&1, user_id))}
+  def handle_info({:typing_expired, user_id, token}, socket) do
+    if socket.assigns.typing_tokens[user_id] == token do
+      {:noreply, stop_typing(socket, user_id)}
+    else
+      # Superseded by a later event, or already cleared.
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -1065,6 +1088,12 @@ defmodule BanterWeb.ChatLive do
     socket
     |> assign(changes)
     |> Feed.rerender(touched)
+  end
+
+  defp stop_typing(socket, user_id) do
+    socket
+    |> update(:typing_users, &Map.delete(&1, user_id))
+    |> update(:typing_tokens, &Map.delete(&1, user_id))
   end
 
   # Looks the message up by id instead of in what the feed has rendered, so the
@@ -1157,6 +1186,7 @@ defmodule BanterWeb.ChatLive do
         |> Feed.load_latest(channel_id)
         |> assign(:loading_more_messages, false)
         |> assign(:typing_users, %{})
+        |> assign(:typing_tokens, %{})
 
       {:error, _} ->
         socket

@@ -159,6 +159,7 @@ Hooks.MessageFeed = {
   mounted() {
     this.loadingMore = false;
     this.scrollToBottom();
+    this.remember();
 
     this.el.addEventListener("scroll", () => {
       if (
@@ -169,6 +170,20 @@ Hooks.MessageFeed = {
         this.loadingMore = true;
         this.pushEvent("load_more_messages", {});
       }
+
+      this.remember();
+    });
+
+    // Every change to the list — a page of older messages, a message deleted
+    // or redrawn, the top trimmed — arrives here after LiveView has applied it
+    // and before the browser paints. Not beforeUpdate/updated: LiveView removes
+    // stream items before those run, and may not run them at all for a
+    // delete-only patch, so they'd measure a position that has already moved.
+    this.mutations = new MutationObserver(() => this.keepPlace());
+    this.mutations.observe(this.el.querySelector("#messages"), {
+      childList: true,
+      subtree: true,
+      characterData: true,
     });
 
     this.handleEvent("scroll_to_bottom", () => {
@@ -179,25 +194,64 @@ Hooks.MessageFeed = {
   },
 
   beforeUpdate() {
-    this._oldScrollHeight = this.el.scrollHeight;
-    this._oldScrollTop = this.el.scrollTop;
-    this._wasNearBottom = this.isNearBottom();
     this._oldChannelId = this.el.dataset.channelId;
   },
 
   updated() {
-    const channelChanged = this.el.dataset.channelId !== this._oldChannelId;
-
-    if (channelChanged) {
+    if (this.el.dataset.channelId !== this._oldChannelId) {
       this.loadingMore = false;
       this.scrollToBottom();
+      this.remember();
     } else if (this.loadingMore) {
-      const addedHeight = this.el.scrollHeight - this._oldScrollHeight;
-      this.el.scrollTop = this._oldScrollTop + addedHeight;
       this.loadingMore = false;
-    } else if (this._wasNearBottom) {
-      this.scrollToBottom();
     }
+  },
+
+  destroyed() {
+    this.mutations.disconnect();
+  },
+
+  // A reader at the bottom follows new messages down. Anyone else stays on
+  // the message they were looking at, wherever the list changed around it.
+  keepPlace() {
+    if (this.wasNearBottom) {
+      this.scrollToBottom();
+    } else if (this.anchor?.isConnected) {
+      this.el.scrollTop += this.anchor.getBoundingClientRect().top - this.anchorTop;
+    }
+
+    this.remember();
+  },
+
+  // Where the reader is, as of the last scroll or change: at the bottom or
+  // not, and which message they're looking at and where it sits.
+  remember() {
+    this.wasNearBottom = this.isNearBottom();
+    this.anchor = this.anchorMessage();
+    this.anchorTop = this.anchor?.getBoundingClientRect().top;
+  },
+
+  // The first message that starts inside the view. Messages stack top to
+  // bottom, so a binary search finds it in a handful of reads — cheap enough
+  // to run on every scroll event.
+  //
+  // Skips the feed's very first message when it can: loading older messages
+  // regroups that one (drops its header), and anchoring on it would shift its
+  // text by the header's height.
+  anchorMessage() {
+    const viewTop = this.el.getBoundingClientRect().top;
+    const messages = this.el.querySelectorAll("#messages > [data-layout]");
+    let lo = 0;
+    let hi = messages.length;
+
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (messages[mid].getBoundingClientRect().top >= viewTop) hi = mid;
+      else lo = mid + 1;
+    }
+
+    if (lo === messages.length) return null;
+    return lo === 0 && messages[1] ? messages[1] : messages[lo];
   },
 
   isNearBottom() {

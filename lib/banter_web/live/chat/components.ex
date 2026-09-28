@@ -648,10 +648,13 @@ defmodule BanterWeb.ChatLive.Components do
   attr :can_moderate, :boolean, default: false
 
   def message_feed(assigns) do
+    # overflow-anchor: none — the MessageFeed hook keeps the reader's place
+    # itself; the browser's own scroll anchoring (Chrome and Firefox, not
+    # Safari) would adjust the same scroll position a second time.
     ~H"""
     <div
       id="message-feed"
-      class="flex-1 overflow-y-auto px-4 py-4"
+      class="flex-1 overflow-y-auto px-4 py-4 [overflow-anchor:none]"
       phx-hook="MessageFeed"
       data-channel-id={@channel.id}
       data-has-more={to_string(@has_more)}

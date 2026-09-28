@@ -27,6 +27,12 @@ defmodule BanterWeb.ChatLive do
   # indicator doesn't blink off between them.
   @typing_ttl 5_000
 
+  # The fewest milliseconds between two typing broadcasts from one view in one
+  # channel. The TypingSignal hook already sends at most one every 3s; this is
+  # the server's own floor, so a client that ignores that can't flood the
+  # guild topic. A little under 3s, to allow for jitter between the two.
+  @typing_min_interval 2_500
+
   @impl true
   def mount(_params, _session, socket) do
     # Subscribe to presence updates and track user as online
@@ -84,6 +90,8 @@ defmodule BanterWeb.ChatLive do
       |> assign(:replying_to, nil)
       |> assign(:typing_users, %{})
       |> assign(:typing_tokens, %{})
+      # {channel_id, monotonic ms} of this view's last typing broadcast.
+      |> assign(:typing_sent, nil)
       |> assign(:show_avatar_picker, false)
       |> allow_upload(:attachments,
         # No .svg — it's XML that can carry <script>, and uploads are served
@@ -209,8 +217,8 @@ defmodule BanterWeb.ChatLive do
   end
 
   @impl true
-  def handle_event("send_message", %{"content" => content}, socket) do
-    content = String.trim(content)
+  def handle_event("send_message", %{"content" => submitted}, socket) do
+    content = String.trim(submitted)
     has_content = content != ""
     has_uploads = length(socket.assigns.uploads.attachments.entries) > 0
 
@@ -289,7 +297,13 @@ defmodule BanterWeb.ChatLive do
                reply_to_id: reply_to_id
              ) do
           {:ok, _message} ->
-            {:noreply, socket |> assign(:message_input, "") |> assign(:replying_to, nil)}
+            # Sending ends this bout of typing; the next keystroke announces a
+            # new one straight away.
+            {:noreply,
+             socket
+             |> clear_composer(submitted)
+             |> assign(:replying_to, nil)
+             |> assign(:typing_sent, nil)}
 
           {:error, _} ->
             {:noreply, put_flash(socket, :error, "Failed to send message")}
@@ -386,19 +400,32 @@ defmodule BanterWeb.ChatLive do
     {:noreply, push_patch(socket, to: ~p"/chat/#{server_id}/#{channel_id}")}
   end
 
+  # Keeps the server's copy of the composer in step. Debounced in the browser,
+  # and no longer what announces typing — that's the "typing" event below.
   def handle_event("update_message_input", %{"content" => content}, socket) do
-    if content != "" && socket.assigns.current_channel && socket.assigns.current_server do
+    {:noreply, assign(socket, :message_input, content)}
+  end
+
+  # From the TypingSignal hook: the user started typing, or is still at it.
+  # Broadcast to the guild at most once per @typing_min_interval per channel.
+  def handle_event("typing", _params, socket) do
+    %{current_channel: channel, current_server: server} = socket.assigns
+    now = System.monotonic_time(:millisecond)
+
+    if channel && server && typing_due?(socket.assigns.typing_sent, channel.id, now) do
       user = socket.assigns.current_user
       name = user.email |> to_string() |> String.split("@") |> List.first()
 
       Phoenix.PubSub.broadcast(
         Banter.PubSub,
-        "guild:#{socket.assigns.current_server.id}",
-        {:guild_event, {:typing, user.id, name, socket.assigns.current_channel.id}}
+        "guild:#{server.id}",
+        {:guild_event, {:typing, user.id, name, channel.id}}
       )
-    end
 
-    {:noreply, assign(socket, :message_input, content)}
+      {:noreply, assign(socket, :typing_sent, {channel.id, now})}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event("validate_message", _params, socket) do
@@ -1089,6 +1116,23 @@ defmodule BanterWeb.ChatLive do
     |> assign(changes)
     |> Feed.rerender(touched)
   end
+
+  # Empties the composer after a send. The text sync is debounced, and a submit
+  # cancels a pending one — so after a quick Enter the server's copy can still
+  # be "" while the box holds what was just sent. Assigning "" over "" is no
+  # change, so nothing would reach the browser and the sent text would stay in
+  # the box. Recording the submitted text first makes the clear a real change.
+  defp clear_composer(socket, submitted) do
+    socket
+    |> assign(:message_input, submitted)
+    |> assign(:message_input, "")
+  end
+
+  defp typing_due?({channel_id, sent_at}, channel_id, now),
+    do: now - sent_at >= @typing_min_interval
+
+  # Never sent, or last sent in another channel.
+  defp typing_due?(_typing_sent, _channel_id, _now), do: true
 
   defp stop_typing(socket, user_id) do
     socket

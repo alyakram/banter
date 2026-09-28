@@ -315,4 +315,30 @@ Hooks.FeedEnd = {
   },
 };
 
+// Announces that the user is typing: on the first keystroke, then at most
+// once every 3s while they keep going. Receivers keep "X is typing…" up for 5s
+// after each announcement (ChatLive's @typing_ttl), so a steady typist stays
+// shown without an event per keystroke. The server enforces its own minimum
+// interval as well; this keeps the events from being sent in the first place.
+Hooks.TypingSignal = {
+  mounted() {
+    this.lastSent = 0;
+
+    this.el.addEventListener("input", () => {
+      if (this.el.value.trim() === "") return;
+
+      const now = Date.now();
+      if (now - this.lastSent < 3000) return;
+
+      this.lastSent = now;
+      this.pushEvent("typing", {});
+    });
+
+    // Sending ends this bout of typing; the next keystroke starts a new one.
+    this.el.form?.addEventListener("submit", () => {
+      this.lastSent = 0;
+    });
+  },
+};
+
 export default Hooks;

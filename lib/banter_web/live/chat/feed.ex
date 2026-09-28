@@ -6,9 +6,14 @@ defmodule BanterWeb.ChatLive.Feed do
   LiveView process, so the process's memory no longer grows with how long a
   channel has been open or how far back someone scrolled. What the process
   does keep is `:rendered_messages` — one small entry per message on screen
-  (id, author, time), oldest first. Two things need it: grouping, since whether a message renders
-  compact depends on the one above it; and knowing which messages a change
-  affects, so only those are redrawn.
+  (id, author, time), oldest first. Two things need it: grouping, since
+  whether a message renders compact depends on the one above it; and knowing
+  which messages a change affects, so only those are redrawn.
+
+  The browser's copy is bounded too. While the reader is at the bottom
+  (`:feed_at_bottom`, reported by the FeedEnd hook), a live message that
+  takes the feed past 250 rendered messages trims the oldest back to 200.
+  Scrolled-up history is never trimmed, since that's what's being read.
 
   The one non-obvious rule: stream items don't re-render when assigns change.
   Anything that alters how a rendered message looks — an edit, its menu
@@ -32,7 +37,15 @@ defmodule BanterWeb.ChatLive.Feed do
   # author, renders compact — no avatar or name.
   @group_minutes 5
 
+  # Trimming starts past @trim_at and cuts back to @window. The gap between
+  # them is a page, so a busy channel trims (and redraws its new first
+  # message) once per 50 messages rather than on every one.
+  @window 200
+  @trim_at 250
+
   def loads, do: @loads
+  def window, do: @window
+  def trim_at, do: @trim_at
 
   def dom_id(message_id), do: "message-#{message_id}"
 
@@ -42,15 +55,47 @@ defmodule BanterWeb.ChatLive.Feed do
     |> stream_configure(:messages, dom_id: &dom_id(&1.id))
     |> stream(:messages, [], [])
     |> assign(:rendered_messages, [])
+    |> assign(:feed_at_bottom, true)
   end
 
-  @doc "Replaces the feed with `messages`, oldest first."
+  @doc """
+  Replaces the feed with `messages`, oldest first. A freshly loaded channel
+  opens scrolled to the bottom, so the reader counts as at the bottom.
+  """
   def reset(socket, messages) do
     entries = Enum.map(messages, &entry/1)
 
     socket
     |> stream(:messages, items(messages, nil), reset: true)
     |> assign(:rendered_messages, entries)
+    |> assign(:feed_at_bottom, true)
+  end
+
+  @doc """
+  Trims the oldest messages if the reader is at the bottom and more than
+  `trim_at/0` are rendered, keeping the newest `window/0`.
+
+  The trimmed messages become the next page up: the paging cursor moves to
+  the new first message and `:has_more_messages` turns on, so scrolling up
+  loads them back. The new first message is redrawn, since it may have been
+  drawn compact under one that's now gone.
+  """
+  def trim(socket) do
+    entries = socket.assigns.rendered_messages
+
+    if socket.assigns.feed_at_bottom and length(entries) > @trim_at do
+      {trimmed, kept} = Enum.split(entries, length(entries) - @window)
+      [first | _] = kept
+
+      trimmed
+      |> Enum.reduce(socket, &stream_delete_by_dom_id(&2, :messages, dom_id(&1.id)))
+      |> assign(:rendered_messages, kept)
+      |> assign(:messages_cursor, first.id)
+      |> assign(:has_more_messages, true)
+      |> rerender([first.id])
+    else
+      socket
+    end
   end
 
   @doc "Adds a message below everything rendered."

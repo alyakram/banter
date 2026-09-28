@@ -209,4 +209,37 @@ Hooks.MessageFeed = {
   },
 };
 
+// Tells the server whether the reader is at the bottom of the message feed —
+// it trims old messages off the top only then, so history someone is reading
+// is never pulled away. Sits on an empty element at the end of the feed and
+// counts as "at the bottom" within the same 200px MessageFeed uses.
+//
+// Deliberately not part of MessageFeed: LiveView locks the element that pushed
+// an event until its reply arrives, and a page of older messages patched in
+// while a second event holds that lock loses its stream position and lands at
+// the bottom. Reporting from this element leaves the feed's lock to
+// load_more_messages alone.
+Hooks.FeedEnd = {
+  mounted() {
+    // The server starts at the bottom too: a channel opens scrolled there.
+    this.atBottom = true;
+
+    this.observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting !== this.atBottom) {
+          this.atBottom = entry.isIntersecting;
+          this.pushEvent("feed_at_bottom", { at_bottom: this.atBottom });
+        }
+      },
+      { root: this.el.parentElement, rootMargin: "0px 0px 200px 0px" }
+    );
+
+    this.observer.observe(this.el);
+  },
+
+  destroyed() {
+    this.observer.disconnect();
+  },
+};
+
 export default Hooks;

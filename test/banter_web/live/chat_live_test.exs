@@ -726,6 +726,109 @@ defmodule BanterWeb.ChatLiveTest do
     end
   end
 
+  describe "trimming a long feed" do
+    alias BanterWeb.ChatLive.Feed
+
+    # Exactly trim_at messages, all paged in: the feed is full, and the next
+    # live message is the one that tips it over.
+    setup %{conn: conn} do
+      ctx = signed_in_with_server(conn)
+
+      messages =
+        for n <- 1..Feed.trim_at() do
+          message_fixture(ctx.channel, ctx.user, %{content: "message #{n}"})
+        end
+
+      {:ok, view, _html} = live(ctx.conn, ~p"/chat/#{ctx.server.id}/#{ctx.channel.id}")
+      page_in_everything(view)
+
+      ctx |> Map.put(:view, view) |> Map.put(:messages, messages)
+    end
+
+    defp page_in_everything(view) do
+      if has_element?(view, "#message-feed[data-has-more=true]") do
+        render_click(view, "load_more_messages", %{})
+        page_in_everything(view)
+      end
+    end
+
+    # What the server thinks is on screen, and what actually is. They must
+    # agree, or grouping and paging go wrong.
+    defp rendered(view) do
+      entries = :sys.get_state(view.pid).socket.assigns.rendered_messages
+      on_page = Regex.scan(~r/id="message-[0-9a-f]{8}-/, render(view)) |> length()
+
+      assert length(entries) == on_page
+      on_page
+    end
+
+    defp post_live(ctx, content) do
+      {:ok, message} =
+        Banter.GuildServer.send_message(ctx.server.id, ctx.channel.id, ctx.user.id, content)
+
+      message
+    end
+
+    test "paging in history is never trimmed", %{view: view} do
+      assert rendered(view) == Feed.trim_at()
+    end
+
+    test "at the bottom, a message past the limit trims the oldest back to the window",
+         %{view: view, messages: messages} = ctx do
+      post_live(ctx, "one too many")
+
+      assert rendered(view) == Feed.window()
+      assert render(view) =~ "one too many"
+
+      # Kept: the newest `window`, counting the one just posted.
+      first_kept = Enum.at(messages, Feed.trim_at() + 1 - Feed.window())
+      last_trimmed = Enum.at(messages, Feed.trim_at() - Feed.window())
+
+      refute has_element?(view, "#message-#{last_trimmed.id}")
+      # It was drawn compact mid-run; now it's first, so it carries the header.
+      assert has_element?(view, "#message-#{first_kept.id}[data-layout=full]")
+    end
+
+    test "the trimmed messages load back when scrolling up",
+         %{view: view, messages: messages} = ctx do
+      post_live(ctx, "one too many")
+      assert has_element?(view, "#message-feed[data-has-more=true]")
+
+      render_click(view, "load_more_messages", %{})
+
+      last_trimmed = Enum.at(messages, Feed.trim_at() - Feed.window())
+      assert has_element?(view, "#message-#{last_trimmed.id}")
+      assert rendered(view) == Feed.window() + 50
+    end
+
+    test "scrolled up, nothing is trimmed until the reader is back at the bottom",
+         %{view: view} = ctx do
+      render_hook(view, "feed_at_bottom", %{"at_bottom" => false})
+      post_live(ctx, "while reading history")
+
+      assert rendered(view) == Feed.trim_at() + 1
+
+      render_hook(view, "feed_at_bottom", %{"at_bottom" => true})
+      post_live(ctx, "back at the bottom")
+
+      assert rendered(view) == Feed.window()
+    end
+
+    test "opening another channel counts as being at the bottom again", %{
+      view: view,
+      server: server,
+      user: user
+    } do
+      render_hook(view, "feed_at_bottom", %{"at_bottom" => false})
+      other = channel_fixture(server, user, %{name: "other"})
+
+      render_click(view, "select_channel", %{"id" => other.id})
+
+      # A channel opens scrolled to the bottom, and the hook assumes so too.
+      assert :sys.get_state(view.pid).socket.assigns.feed_at_bottom
+    end
+  end
+
   describe "grouping and redrawing in the feed" do
     setup %{conn: conn} do
       ctx = signed_in_with_server(conn)

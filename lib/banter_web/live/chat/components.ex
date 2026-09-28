@@ -693,6 +693,9 @@ defmodule BanterWeb.ChatLive.Components do
           <% end %>
         <% end %>
       </div>
+
+      <%!-- Reports whether the reader is at the bottom (see the FeedEnd hook). --%>
+      <div id="message-feed-end" phx-hook="FeedEnd" class="h-px"></div>
     </div>
     """
   end

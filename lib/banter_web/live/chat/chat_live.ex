@@ -444,6 +444,14 @@ defmodule BanterWeb.ChatLive do
     end
   end
 
+  # From the FeedEnd hook, whenever the reader moves onto or off the
+  # bottom of the feed. Trimming old messages only happens while they're on
+  # it, so history someone has scrolled up to read is never pulled away.
+  def handle_event("feed_at_bottom", %{"at_bottom" => at_bottom}, socket)
+      when is_boolean(at_bottom) do
+    {:noreply, assign(socket, :feed_at_bottom, at_bottom)}
+  end
+
   def handle_event("toggle_status_menu", _, socket) do
     {:noreply, assign(socket, :show_status_menu, !socket.assigns.show_status_menu)}
   end
@@ -775,7 +783,7 @@ defmodule BanterWeb.ChatLive do
       # itself a Message, and message reads are membership-gated.
       {:ok, message} = Ash.load(message, Feed.loads(), actor: socket.assigns.current_user)
 
-      socket = Feed.append(socket, message)
+      socket = socket |> Feed.append(message) |> Feed.trim()
 
       {:noreply, push_event(socket, "scroll_to_bottom", %{})}
     else

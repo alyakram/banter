@@ -158,17 +158,25 @@ Hooks.VoiceChannel = {
 Hooks.MessageFeed = {
   mounted() {
     this.loadingMore = false;
+    this.loadingNewer = false;
     this.scrollToBottom();
+    this.remember();
 
     this.el.addEventListener("scroll", () => {
-      if (
-        this.el.scrollTop < 200 &&
-        !this.loadingMore &&
-        this.el.dataset.hasMore === "true"
-      ) {
-        this.loadingMore = true;
-        this.pushEvent("load_more_messages", {});
-      }
+      this.maybeLoad();
+      this.remember();
+    });
+
+    // Every change to the list — a page of older messages, a message deleted
+    // or redrawn, the top trimmed — arrives here after LiveView has applied it
+    // and before the browser paints. Not beforeUpdate/updated: LiveView removes
+    // stream items before those run, and may not run them at all for a
+    // delete-only patch, so they'd measure a position that has already moved.
+    this.mutations = new MutationObserver(() => this.keepPlace());
+    this.mutations.observe(this.el.querySelector("#messages"), {
+      childList: true,
+      subtree: true,
+      characterData: true,
     });
 
     this.handleEvent("scroll_to_bottom", () => {
@@ -176,28 +184,93 @@ Hooks.MessageFeed = {
         requestAnimationFrame(() => this.scrollToBottom());
       }
     });
+
+    // "Jump to present" replaced the feed with the newest page.
+    this.handleEvent("scroll_to_present", () => {
+      this.scrollToBottom();
+      this.remember();
+    });
   },
 
   beforeUpdate() {
-    this._oldScrollHeight = this.el.scrollHeight;
-    this._oldScrollTop = this.el.scrollTop;
-    this._wasNearBottom = this.isNearBottom();
     this._oldChannelId = this.el.dataset.channelId;
   },
 
   updated() {
-    const channelChanged = this.el.dataset.channelId !== this._oldChannelId;
+    this.loadingMore = false;
+    this.loadingNewer = false;
 
-    if (channelChanged) {
-      this.loadingMore = false;
+    if (this.el.dataset.channelId !== this._oldChannelId) {
       this.scrollToBottom();
-    } else if (this.loadingMore) {
-      const addedHeight = this.el.scrollHeight - this._oldScrollHeight;
-      this.el.scrollTop = this._oldScrollTop + addedHeight;
-      this.loadingMore = false;
-    } else if (this._wasNearBottom) {
-      this.scrollToBottom();
+      this.remember();
     }
+  },
+
+  // Asks for the page above near the top, or — while the feed is detached from
+  // the present — the page below near the bottom. Never both at once: each
+  // push locks this element until its reply, and a page that arrives while
+  // the other request holds the lock is patched in without its position.
+  maybeLoad() {
+    if (this.loadingMore || this.loadingNewer) return;
+
+    const { hasMore, hasNewer } = this.el.dataset;
+
+    if (this.el.scrollTop < 200 && hasMore === "true") {
+      this.loadingMore = true;
+      this.pushEvent("load_more_messages", {});
+    } else if (this.isNearBottom() && hasNewer === "true") {
+      this.loadingNewer = true;
+      this.pushEvent("load_newer_messages", {});
+    }
+  },
+
+  destroyed() {
+    this.mutations.disconnect();
+  },
+
+  // A reader at the bottom of an attached feed follows new messages down.
+  // Anyone else — including someone at the bottom of a detached feed, who is
+  // about to get the next page below — stays on the message they were looking
+  // at, wherever the list changed around it.
+  keepPlace() {
+    if (this.wasFollowing) {
+      this.scrollToBottom();
+    } else if (this.anchor?.isConnected) {
+      this.el.scrollTop += this.anchor.getBoundingClientRect().top - this.anchorTop;
+    }
+
+    this.remember();
+  },
+
+  // Where the reader is, as of the last scroll or change: following the
+  // present or not, and which message they're looking at and where it sits.
+  remember() {
+    this.wasFollowing = this.isNearBottom() && this.el.dataset.hasNewer !== "true";
+    this.anchor = this.anchorMessage();
+    this.anchorTop = this.anchor?.getBoundingClientRect().top;
+  },
+
+  // The first message that starts inside the view. Messages stack top to
+  // bottom, so a binary search finds it in a handful of reads — cheap enough
+  // to run on every scroll event.
+  //
+  // Skips the feed's very first message when it can: loading older messages
+  // regroups that one (drops its header), and anchoring on it would shift its
+  // text by the header's height.
+  anchorMessage() {
+    const viewTop = this.el.getBoundingClientRect().top;
+    const messages = this.el.querySelectorAll("#messages > [data-layout]");
+    let lo = 0;
+    let hi = messages.length;
+
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (messages[mid].getBoundingClientRect().top >= viewTop) hi = mid;
+      else lo = mid + 1;
+    }
+
+    if (lo === messages.length) return null;
+    return lo === 0 && messages[1] ? messages[1] : messages[lo];
   },
 
   isNearBottom() {
@@ -206,6 +279,39 @@ Hooks.MessageFeed = {
 
   scrollToBottom() {
     this.el.scrollTop = this.el.scrollHeight;
+  },
+};
+
+// Tells the server whether the reader is at the bottom of the message feed —
+// it trims old messages off the top only then, so history someone is reading
+// is never pulled away. Sits on an empty element at the end of the feed and
+// counts as "at the bottom" within the same 200px MessageFeed uses.
+//
+// Deliberately not part of MessageFeed: LiveView locks the element that pushed
+// an event until its reply arrives, and a page of older messages patched in
+// while a second event holds that lock loses its stream position and lands at
+// the bottom. Reporting from this element leaves the feed's lock to
+// load_more_messages alone.
+Hooks.FeedEnd = {
+  mounted() {
+    // The server starts at the bottom too: a channel opens scrolled there.
+    this.atBottom = true;
+
+    this.observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting !== this.atBottom) {
+          this.atBottom = entry.isIntersecting;
+          this.pushEvent("feed_at_bottom", { at_bottom: this.atBottom });
+        }
+      },
+      { root: this.el.parentElement, rootMargin: "0px 0px 200px 0px" }
+    );
+
+    this.observer.observe(this.el);
+  },
+
+  destroyed() {
+    this.observer.disconnect();
   },
 };
 

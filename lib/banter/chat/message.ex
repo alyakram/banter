@@ -227,6 +227,14 @@ defmodule Banter.Chat.Message do
       filter expr(id == ^arg(:id))
     end
 
+    # Re-reads specific messages. The chat feed holds no messages in memory, so
+    # when one on screen needs redrawing — an edit, a menu opening, its
+    # neighbour being deleted — it's fetched again by id.
+    read :by_ids do
+      argument :ids, {:array, :uuid}, allow_nil?: false
+      filter expr(id in ^arg(:ids))
+    end
+
     read :by_channel do
       argument :channel_id, :uuid, allow_nil?: false
       argument :before_id, :uuid, allow_nil?: true
@@ -237,6 +245,20 @@ defmodule Banter.Chat.Message do
       )
 
       prepare build(sort: [id: :desc], limit: 51)
+    end
+
+    # by_channel's counterpart for paging downward, after the feed has dropped
+    # its newest messages to stay bounded: the messages after `after_id`,
+    # oldest first. 51 rows for a page of 50, like by_channel — the extra one
+    # says there's more. The [:channel_id, :id] index serves this direction
+    # too.
+    read :newer_in_channel do
+      argument :channel_id, :uuid, allow_nil?: false
+      argument :after_id, :uuid, allow_nil?: false
+
+      filter expr(channel_id == ^arg(:channel_id) and id > ^arg(:after_id))
+
+      prepare build(sort: [id: :asc], limit: 51)
     end
 
     read :pinned_in_channel do

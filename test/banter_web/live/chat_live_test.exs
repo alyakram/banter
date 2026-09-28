@@ -648,12 +648,13 @@ defmodule BanterWeb.ChatLiveTest do
       ctx = signed_in_with_server(conn)
 
       # 60 messages: more than the 50 the view shows, so a second page exists.
-      for n <- 1..60 do
-        message_fixture(ctx.channel, ctx.user, %{content: "message #{n}"})
-      end
+      messages =
+        for n <- 1..60 do
+          message_fixture(ctx.channel, ctx.user, %{content: "message #{n}"})
+        end
 
       {:ok, view, _html} = live(ctx.conn, ~p"/chat/#{ctx.server.id}/#{ctx.channel.id}")
-      Map.put(ctx, :view, view)
+      ctx |> Map.put(:view, view) |> Map.put(:messages, messages)
     end
 
     test "the newest 50 are shown initially, not the oldest", %{view: view} do
@@ -671,6 +672,419 @@ defmodule BanterWeb.ChatLiveTest do
 
       assert html =~ "message 1"
       assert html =~ "message 60"
+    end
+
+    test "the older page lands above, in order", %{view: view, messages: messages} do
+      render_click(view, "load_more_messages", %{})
+
+      # Positions of each message's element in the rendered page. Prepending a
+      # list at the top of a stream reverses it unless done carefully.
+      ids = Enum.map(messages, &"id=\"message-#{&1.id}\"")
+      html = render(view)
+      positions = Enum.map(ids, fn id -> :binary.match(html, id) |> elem(0) end)
+
+      assert positions == Enum.sort(positions)
+    end
+
+    test "the message that was first joins the run above it once older ones load", %{
+      view: view,
+      messages: messages
+    } do
+      # All 60 are one author, seconds apart: one run. The 11th was first on
+      # screen, so it had to carry the header; with the 10th above it, it
+      # continues the run instead.
+      eleventh = Enum.at(messages, 10)
+      assert has_element?(view, "#message-#{eleventh.id}[data-layout=full]")
+
+      render_click(view, "load_more_messages", %{})
+
+      assert has_element?(view, "#message-#{eleventh.id}[data-layout=compact]")
+    end
+
+    test "an edit to a message that isn't on screen isn't added to it", %{
+      view: view,
+      server: server,
+      user: user,
+      messages: [first | _]
+    } do
+      {:ok, _} = Banter.GuildServer.edit_message(server.id, first.id, "edited far back", user)
+
+      refute render(view) =~ "edited far back"
+    end
+
+    test "the view holds no message content, however much has loaded", %{view: view} do
+      render_click(view, "load_more_messages", %{})
+      assert render(view) =~ "message 42"
+
+      # This is what the stream is for: before it, every loaded message sat
+      # in the process's assigns for the life of the view.
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      refute Map.has_key?(assigns, :messages)
+      assert length(assigns.rendered_messages) == 60
+      refute inspect(assigns, limit: :infinity, printable_limit: :infinity) =~ "message 42"
+    end
+  end
+
+  describe "trimming a long feed" do
+    alias BanterWeb.ChatLive.Feed
+
+    # Exactly trim_at messages, all paged in: the feed is full, and the next
+    # live message is the one that tips it over.
+    setup %{conn: conn} do
+      ctx = signed_in_with_server(conn)
+
+      messages =
+        for n <- 1..Feed.trim_at() do
+          message_fixture(ctx.channel, ctx.user, %{content: "message #{n}"})
+        end
+
+      {:ok, view, _html} = live(ctx.conn, ~p"/chat/#{ctx.server.id}/#{ctx.channel.id}")
+      page_in_everything(view)
+
+      ctx |> Map.put(:view, view) |> Map.put(:messages, messages)
+    end
+
+    defp page_in_everything(view) do
+      if has_element?(view, "#message-feed[data-has-more=true]") do
+        render_click(view, "load_more_messages", %{})
+        page_in_everything(view)
+      end
+    end
+
+    # What the server thinks is on screen, and what actually is. They must
+    # agree, or grouping and paging go wrong.
+    defp rendered(view) do
+      entries = :sys.get_state(view.pid).socket.assigns.rendered_messages
+      on_page = Regex.scan(~r/id="message-[0-9a-f]{8}-/, render(view)) |> length()
+
+      assert length(entries) == on_page
+      on_page
+    end
+
+    defp post_live(ctx, content) do
+      {:ok, message} =
+        Banter.GuildServer.send_message(ctx.server.id, ctx.channel.id, ctx.user.id, content)
+
+      message
+    end
+
+    test "paging in history is never trimmed", %{view: view} do
+      assert rendered(view) == Feed.trim_at()
+    end
+
+    test "at the bottom, a message past the limit trims the oldest back to the window",
+         %{view: view, messages: messages} = ctx do
+      post_live(ctx, "one too many")
+
+      assert rendered(view) == Feed.window()
+      assert render(view) =~ "one too many"
+
+      # Kept: the newest `window`, counting the one just posted.
+      first_kept = Enum.at(messages, Feed.trim_at() + 1 - Feed.window())
+      last_trimmed = Enum.at(messages, Feed.trim_at() - Feed.window())
+
+      refute has_element?(view, "#message-#{last_trimmed.id}")
+      # It was drawn compact mid-run; now it's first, so it carries the header.
+      assert has_element?(view, "#message-#{first_kept.id}[data-layout=full]")
+    end
+
+    test "the trimmed messages load back when scrolling up",
+         %{view: view, messages: messages} = ctx do
+      post_live(ctx, "one too many")
+      assert has_element?(view, "#message-feed[data-has-more=true]")
+
+      render_click(view, "load_more_messages", %{})
+
+      last_trimmed = Enum.at(messages, Feed.trim_at() - Feed.window())
+      assert has_element?(view, "#message-#{last_trimmed.id}")
+      assert rendered(view) == Feed.window() + 50
+    end
+
+    test "scrolled up with the feed full, a new message waits below instead",
+         %{view: view} = ctx do
+      render_hook(view, "feed_at_bottom", %{"at_bottom" => false})
+      held = post_live(ctx, "while reading history")
+
+      # Neither appended past the cap nor trimmed from the top, which could be
+      # what's being read. The feed detaches and the bar says why.
+      assert rendered(view) == Feed.trim_at()
+      refute has_element?(view, "#message-#{held.id}")
+      assert has_element?(view, "#message-feed[data-has-newer=true]")
+      assert has_element?(view, "#jump-to-present", "1 new message")
+
+      # Scrolling down brings it in; that's past the cap, so the top goes.
+      render_hook(view, "load_newer_messages", %{})
+
+      assert has_element?(view, "#message-#{held.id}")
+      assert rendered(view) == Feed.window()
+      refute has_element?(view, "#jump-to-present")
+    end
+
+    test "opening another channel counts as being at the bottom again", %{
+      view: view,
+      server: server,
+      user: user
+    } do
+      render_hook(view, "feed_at_bottom", %{"at_bottom" => false})
+      other = channel_fixture(server, user, %{name: "other"})
+
+      render_click(view, "select_channel", %{"id" => other.id})
+
+      # A channel opens scrolled to the bottom, and the hook assumes so too.
+      assert :sys.get_state(view.pid).socket.assigns.feed_at_bottom
+    end
+  end
+
+  describe "the two-way window" do
+    alias BanterWeb.ChatLive.Feed
+
+    # A page more than the cap: paging all the way up has to drop the newest.
+    setup %{conn: conn} do
+      ctx = signed_in_with_server(conn)
+
+      messages =
+        for n <- 1..(Feed.trim_at() + 50) do
+          message_fixture(ctx.channel, ctx.user, %{content: "message #{n}"})
+        end
+
+      {:ok, view, _html} = live(ctx.conn, ~p"/chat/#{ctx.server.id}/#{ctx.channel.id}")
+
+      ctx |> Map.put(:view, view) |> Map.put(:messages, messages)
+    end
+
+    defp detached?(view), do: has_element?(view, "#message-feed[data-has-newer=true]")
+
+    test "paging back past the cap drops the newest and detaches from the present", %{
+      view: view,
+      messages: messages
+    } do
+      page_in_everything(view)
+
+      assert rendered(view) == Feed.window()
+      assert has_element?(view, "#message-#{hd(messages).id}")
+      refute has_element?(view, "#message-#{Enum.at(messages, Feed.window()).id}")
+      assert detached?(view)
+      assert has_element?(view, "#jump-to-present", "You're viewing older messages")
+    end
+
+    test "new messages while detached are held and counted", %{view: view} = ctx do
+      page_in_everything(view)
+
+      first = post_live(ctx, "posted while away")
+      assert has_element?(view, "#jump-to-present", "1 new message")
+
+      post_live(ctx, "and another")
+      assert has_element?(view, "#jump-to-present", "2 new messages")
+
+      refute has_element?(view, "#message-#{first.id}")
+      assert rendered(view) == Feed.window()
+    end
+
+    test "scrolling back down pages toward the present and reattaches there",
+         %{view: view, messages: messages} = ctx do
+      page_in_everything(view)
+      live_one = post_live(ctx, "posted while away")
+
+      # 201-250: nothing trimmed yet, still detached, still one unseen.
+      render_hook(view, "load_newer_messages", %{})
+      assert rendered(view) == Feed.trim_at()
+      assert has_element?(view, "#jump-to-present", "1 new message")
+
+      # 251-300 takes it past the cap, so the top goes; the live one is still
+      # below. Those 50 were on screen before detaching, so they aren't "new".
+      render_hook(view, "load_newer_messages", %{})
+      assert rendered(view) == Feed.window()
+      refute has_element?(view, "#message-#{hd(messages).id}")
+      assert has_element?(view, "#jump-to-present", "1 new message")
+
+      # The live one: the present, so the feed reattaches.
+      render_hook(view, "load_newer_messages", %{})
+      assert has_element?(view, "#message-#{live_one.id}")
+      refute detached?(view)
+      refute has_element?(view, "#jump-to-present")
+
+      # Attached again, the next message arrives normally.
+      next = post_live(ctx, "back in the flow")
+      assert has_element?(view, "#message-#{next.id}")
+    end
+
+    test "jump to present reopens the newest page", %{view: view, messages: messages} do
+      page_in_everything(view)
+
+      view |> element("#jump-to-present button") |> render_click()
+
+      assert rendered(view) == 50
+      assert has_element?(view, "#message-#{List.last(messages).id}")
+      refute detached?(view)
+      refute has_element?(view, "#jump-to-present")
+      assert has_element?(view, "#message-feed[data-has-more=true]")
+      assert_push_event(view, "scroll_to_present", %{})
+    end
+
+    test "the feed never holds more than the cap, whatever the reader does",
+         %{view: view} = ctx do
+      # Item 3 of the follow-up: with every path trimming as it goes, there's
+      # never an over-full feed waiting for a trim when the reader gets back to
+      # the bottom. Checked after every step of a long, mixed session.
+      within_cap = fn -> assert rendered(view) <= Feed.trim_at() end
+
+      page_up = fn ->
+        render_click(view, "load_more_messages", %{})
+        within_cap.()
+      end
+
+      for _ <- 1..6, do: page_up.()
+
+      for n <- 1..3 do
+        post_live(ctx, "away #{n}")
+        within_cap.()
+      end
+
+      Stream.repeatedly(fn -> render_hook(view, "load_newer_messages", %{}) end)
+      |> Stream.each(fn _ -> within_cap.() end)
+      |> Enum.find(fn _ -> not detached?(view) end)
+
+      # Back at the present and at the bottom: a busy stretch of live traffic.
+      render_hook(view, "feed_at_bottom", %{"at_bottom" => true})
+
+      for n <- 1..120 do
+        post_live(ctx, "busy #{n}")
+        within_cap.()
+      end
+
+      # And back up far enough to cross the cap from the other side.
+      for _ <- 1..4, do: page_up.()
+      assert detached?(view)
+    end
+  end
+
+  describe "grouping and redrawing in the feed" do
+    setup %{conn: conn} do
+      ctx = signed_in_with_server(conn)
+      first = message_fixture(ctx.channel, ctx.user, %{content: "first of the run"})
+      second = message_fixture(ctx.channel, ctx.user, %{content: "second of the run"})
+      {:ok, view, _html} = live(ctx.conn, ~p"/chat/#{ctx.server.id}/#{ctx.channel.id}")
+
+      Map.merge(ctx, %{view: view, first: first, second: second})
+    end
+
+    test "consecutive messages from one author share a header", %{
+      view: view,
+      first: first,
+      second: second
+    } do
+      assert has_element?(view, "#message-#{first.id}[data-layout=full]")
+      assert has_element?(view, "#message-#{second.id}[data-layout=compact]")
+    end
+
+    test "a live message joins the run, and someone else's starts a new one", %{
+      view: view,
+      server: server,
+      channel: channel,
+      user: user
+    } do
+      # Joined before the first send: GuildServer caches its member list when
+      # it starts, and the send below starts it.
+      other = user_fixture()
+      member_fixture(other, server)
+
+      {:ok, mine} = Banter.GuildServer.send_message(server.id, channel.id, user.id, "third")
+      assert has_element?(view, "#message-#{mine.id}[data-layout=compact]")
+
+      {:ok, theirs} = Banter.GuildServer.send_message(server.id, channel.id, other.id, "hi")
+      assert has_element?(view, "#message-#{theirs.id}[data-layout=full]")
+    end
+
+    test "deleting the head of a run gives the next message the header", %{
+      view: view,
+      server: server,
+      user: user,
+      first: first,
+      second: second
+    } do
+      :ok = Banter.GuildServer.delete_message(server.id, first.id, user)
+
+      refute has_element?(view, "#message-#{first.id}")
+      assert has_element?(view, "#message-#{second.id}[data-layout=full]")
+    end
+
+    test "opening another message's menu closes the first", %{
+      view: view,
+      first: first,
+      second: second
+    } do
+      render_click(view, "select_message", %{"id" => first.id})
+      assert has_element?(view, "#msg-menu-#{first.id}")
+
+      render_click(view, "select_message", %{"id" => second.id})
+      refute has_element?(view, "#msg-menu-#{first.id}")
+      assert has_element?(view, "#msg-menu-#{second.id}")
+    end
+
+    test "an edited message says so in either layout", %{
+      view: view,
+      server: server,
+      user: user,
+      first: first,
+      second: second
+    } do
+      refute view |> element("#message-#{second.id}") |> render() =~ "(edited)"
+
+      {:ok, _} = Banter.GuildServer.edit_message(server.id, first.id, "reworded", user)
+      {:ok, _} = Banter.GuildServer.edit_message(server.id, second.id, "reworded too", user)
+
+      # The compact one has no header row to put the label in, which is how
+      # it used to go missing.
+      assert has_element?(view, "#message-#{second.id}[data-layout=compact]", "(edited)")
+      assert has_element?(view, "#message-#{first.id}[data-layout=full]", "(edited)")
+    end
+
+    test "cancelling an edit closes the form", %{view: view, first: first} do
+      render_click(view, "start_edit", %{"id" => first.id})
+      assert has_element?(view, "#message-#{first.id} form[phx-submit=save_edit]")
+
+      render_click(view, "cancel_edit", %{})
+      refute has_element?(view, "#message-#{first.id} form[phx-submit=save_edit]")
+    end
+
+    test "cancelling a delete confirmation hides it again", %{view: view, first: first} do
+      render_click(view, "confirm_delete", %{"id" => first.id})
+      assert has_element?(view, "#message-#{first.id} button[phx-click=delete_message]")
+
+      render_click(view, "cancel_delete", %{})
+      refute has_element?(view, "#message-#{first.id} button[phx-click=delete_message]")
+    end
+
+    test "a saved edit redraws the message without the form", %{
+      view: view,
+      first: first
+    } do
+      render_click(view, "start_edit", %{"id" => first.id})
+
+      render_submit(view, "save_edit", %{"message_id" => first.id, "content" => "reworded"})
+
+      html = view |> element("#message-#{first.id}") |> render()
+      assert html =~ "reworded"
+      refute html =~ "save_edit"
+    end
+
+    test "an empty channel shows its welcome, and it's still there once messages arrive", %{
+      conn: conn,
+      server: server,
+      user: user
+    } do
+      quiet = channel_fixture(server, user, %{name: "quiet"})
+      {:ok, view, _} = live(conn, ~p"/chat/#{server.id}/#{quiet.id}")
+
+      # Always rendered; CSS shows it only while it's the feed's sole child.
+      assert has_element?(view, "#messages-empty", "Welcome to #quiet!")
+
+      {:ok, _} =
+        Banter.GuildServer.send_message(server.id, quiet.id, user.id, "breaking the silence")
+
+      assert has_element?(view, "#messages-empty")
+      assert render(view) =~ "breaking the silence"
     end
   end
 
@@ -706,6 +1120,36 @@ defmodule BanterWeb.ChatLiveTest do
 
       assert reply.reply_to_id == message.id
       assert reply.message_type == :reply
+    end
+
+    test "a message from another channel can't be replied to", %{
+      view: view,
+      user: user,
+      server: server,
+      channel: channel
+    } do
+      # The reply target is looked up by id, so the id alone must not be
+      # enough: a crafted event naming a message elsewhere in the server is
+      # ignored rather than threading a reply across channels.
+      elsewhere = channel_fixture(server, user, %{name: "elsewhere"})
+      foreign = message_fixture(elsewhere, user, %{content: "over there"})
+
+      html = render_click(view, "start_reply", %{"id" => foreign.id})
+      refute html =~ "Replying to"
+
+      view
+      |> element("form[phx-submit='send_message']")
+      |> render_submit(%{content: "not threaded"})
+
+      {:ok, messages} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: user)
+      assert Enum.find(messages, &(&1.content == "not threaded")).reply_to_id == nil
+    end
+
+    test "an unknown message id is ignored", %{view: view} do
+      html = render_click(view, "start_reply", %{"id" => Ash.UUID.generate()})
+
+      refute html =~ "Replying to"
+      assert Process.alive?(view.pid)
     end
 
     test "cancelling a reply clears it, so the next message is a normal one", %{
@@ -860,16 +1304,42 @@ defmodule BanterWeb.ChatLiveTest do
       assert render(view)
     end
 
-    test "the edit buffer updates as you type", %{view: view, user: user, channel: channel} do
-      # Sent through the view so it's in the messages assign — start_edit
-      # resolves the message from there, not from the database.
+    test "an edit draft survives the message being redrawn", %{
+      view: view,
+      user: user,
+      channel: channel
+    } do
+      # Sent through the view so the message is on screen — the edit form
+      # renders inside it.
       view |> element("form[phx-submit='send_message']") |> render_submit(%{content: "before"})
       {:ok, [message]} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: user)
 
       render_click(view, "start_edit", %{"id" => message.id})
-      html = render_click(view, "update_edit", %{"content" => "mid-edit text"})
+      render_click(view, "update_edit", %{"content" => "mid-edit text"})
+
+      # Typing doesn't redraw the message (the browser already shows the
+      # text), so force a redraw another way: the author changing avatar
+      # redraws everything they wrote. The form must come back with the
+      # draft, not the original text.
+      render_hook(view, "select_avatar", %{"url" => "/images/avatars/avatar-3.png"})
+      html = view |> element("#message-#{message.id}") |> render()
 
       assert html =~ "mid-edit text"
+      assert html =~ "avatar-3.png"
+    end
+
+    test "start_edit opens the form on a message loaded with the channel", %{
+      conn: conn,
+      user: user,
+      server: server,
+      channel: channel
+    } do
+      message = message_fixture(channel, user, %{content: "from history"})
+      {:ok, view, _} = live(conn, ~p"/chat/#{server.id}/#{channel.id}")
+
+      html = render_click(view, "start_edit", %{"id" => message.id})
+
+      assert html =~ ~s(phx-submit="save_edit")
     end
 
     test "validate_message keeps the view alive during an upload change", %{view: view} do

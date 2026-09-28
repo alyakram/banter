@@ -217,6 +217,46 @@ defmodule Banter.Chat.MessageTest do
     end
   end
 
+  describe "by_ids" do
+    test "a member gets exactly the messages asked for", %{author: author, channel: channel} do
+      {:ok, one} = send_message(message_attrs(channel, author, %{content: "1"}), actor: author)
+      {:ok, _two} = send_message(message_attrs(channel, author, %{content: "2"}), actor: author)
+      {:ok, three} = send_message(message_attrs(channel, author, %{content: "3"}), actor: author)
+
+      assert {:ok, found} = Chat.list_messages_by_ids([one.id, three.id], actor: author)
+      assert found |> Enum.map(& &1.id) |> Enum.sort() == Enum.sort([one.id, three.id])
+    end
+
+    test "a non-member gets nothing back, even naming the ids", %{
+      author: author,
+      channel: channel
+    } do
+      outsider = user_fixture()
+      {:ok, message} = send_message(message_attrs(channel, author), actor: author)
+
+      # Read policies filter rather than raise.
+      assert {:ok, []} = Chat.list_messages_by_ids([message.id], actor: outsider)
+    end
+
+    test "mixing in another server's message returns only the readable ones", %{
+      author: author,
+      channel: channel
+    } do
+      other_owner = user_fixture()
+      {other_server, _} = server_with_owner_fixture(other_owner)
+      other_channel = channel_fixture(other_server, other_owner)
+      foreign = message_fixture(other_channel, other_owner)
+      {:ok, mine} = send_message(message_attrs(channel, author), actor: author)
+
+      assert {:ok, [found]} = Chat.list_messages_by_ids([mine.id, foreign.id], actor: author)
+      assert found.id == mine.id
+    end
+
+    test "an empty list reads nothing", %{author: author} do
+      assert {:ok, []} = Chat.list_messages_by_ids([], actor: author)
+    end
+  end
+
   describe "by_channel" do
     test "returns the channel's messages newest first", %{author: author, channel: channel} do
       {:ok, first} = send_message(message_attrs(channel, author, %{content: "1"}), actor: author)
@@ -295,6 +335,96 @@ defmodule Banter.Chat.MessageTest do
       {:ok, _} = send_message(message_attrs(channel, author), actor: author)
 
       assert {:ok, []} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: outsider)
+    end
+  end
+
+  describe "newer_in_channel" do
+    defp post_n(channel, author, n) do
+      for i <- 1..n do
+        {:ok, m} =
+          send_message(message_attrs(channel, author, %{content: "msg #{i}"}), actor: author)
+
+        m
+      end
+    end
+
+    test "returns the messages after the cursor, oldest first", %{
+      author: author,
+      channel: channel
+    } do
+      [_first, second, third, fourth, fifth] = post_n(channel, author, 5)
+
+      assert {:ok, newer} =
+               Chat.list_newer_channel_messages(
+                 %{channel_id: channel.id, after_id: second.id},
+                 actor: author
+               )
+
+      # Oldest first, the opposite of by_channel: the feed appends these
+      # below what it already shows.
+      assert Enum.map(newer, & &1.id) == [third.id, fourth.id, fifth.id]
+    end
+
+    test "fetches at most 51 rows — 50 displayed plus one to detect more", %{
+      author: author,
+      channel: channel
+    } do
+      [first | rest] = post_n(channel, author, 55)
+
+      assert {:ok, newer} =
+               Chat.list_newer_channel_messages(
+                 %{channel_id: channel.id, after_id: first.id},
+                 actor: author
+               )
+
+      # The 51 closest to the cursor, not the 51 newest.
+      assert Enum.map(newer, & &1.id) == rest |> Enum.take(51) |> Enum.map(& &1.id)
+    end
+
+    test "only returns messages from the requested channel", %{
+      author: author,
+      server: server,
+      channel: channel
+    } do
+      [cursor] = post_n(channel, author, 1)
+      other_channel = channel_fixture(server, author)
+      {:ok, elsewhere} = send_message(message_attrs(other_channel, author), actor: author)
+      {:ok, here} = send_message(message_attrs(channel, author), actor: author)
+
+      assert {:ok, newer} =
+               Chat.list_newer_channel_messages(
+                 %{channel_id: channel.id, after_id: cursor.id},
+                 actor: author
+               )
+
+      assert Enum.map(newer, & &1.id) == [here.id]
+      refute elsewhere.id in Enum.map(newer, & &1.id)
+    end
+
+    test "nothing newer is an empty page", %{author: author, channel: channel} do
+      [latest] = post_n(channel, author, 1)
+
+      assert {:ok, []} =
+               Chat.list_newer_channel_messages(
+                 %{channel_id: channel.id, after_id: latest.id},
+                 actor: author
+               )
+    end
+
+    test "after_id is required", %{author: author, channel: channel} do
+      assert {:error, %Ash.Error.Invalid{}} =
+               Chat.list_newer_channel_messages(%{channel_id: channel.id}, actor: author)
+    end
+
+    test "a non-member gets nothing back", %{author: author, channel: channel} do
+      outsider = user_fixture()
+      [cursor, _newer] = post_n(channel, author, 2)
+
+      assert {:ok, []} =
+               Chat.list_newer_channel_messages(
+                 %{channel_id: channel.id, after_id: cursor.id},
+                 actor: outsider
+               )
     end
   end
 

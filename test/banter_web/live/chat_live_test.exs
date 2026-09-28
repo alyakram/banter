@@ -892,6 +892,24 @@ defmodule BanterWeb.ChatLiveTest do
       assert has_element?(view, "#msg-menu-#{second.id}")
     end
 
+    test "an edited message says so in either layout", %{
+      view: view,
+      server: server,
+      user: user,
+      first: first,
+      second: second
+    } do
+      refute view |> element("#message-#{second.id}") |> render() =~ "(edited)"
+
+      {:ok, _} = Banter.GuildServer.edit_message(server.id, first.id, "reworded", user)
+      {:ok, _} = Banter.GuildServer.edit_message(server.id, second.id, "reworded too", user)
+
+      # The compact one has no header row to put the label in, which is how
+      # it used to go missing.
+      assert has_element?(view, "#message-#{second.id}[data-layout=compact]", "(edited)")
+      assert has_element?(view, "#message-#{first.id}[data-layout=full]", "(edited)")
+    end
+
     test "cancelling an edit closes the form", %{view: view, first: first} do
       render_click(view, "start_edit", %{"id" => first.id})
       assert has_element?(view, "#message-#{first.id} form[phx-submit=save_edit]")

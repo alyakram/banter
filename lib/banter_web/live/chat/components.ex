@@ -857,7 +857,14 @@ defmodule BanterWeb.ChatLive.Components do
           <.reply_quote message={@message} />
           <div class={message_bubble_class(@message, @current_user)}>
             <%= if @message.content && @message.content != "" do %>
-              <p class="text-[15px] leading-relaxed break-words whitespace-pre-wrap"><%= @message.content %></p>
+              <%!-- No header row here to carry "(edited)", so it trails the
+                   text. An edit can't leave the content empty, so an edited
+                   message always reaches this branch. phx-no-format: the
+                   formatter would indent the text, and pre-wrap shows that. --%>
+              <p phx-no-format class="text-[15px] leading-relaxed break-words whitespace-pre-wrap"><%= @message.content %><span
+                  :if={@message.edited_at}
+                  class="ml-1 text-[10px] text-base-content/40"
+                >(edited)</span></p>
             <% end %>
             <%= if has_attachments?(@message) do %>
               <.message_attachments attachments={@message.attachments} />

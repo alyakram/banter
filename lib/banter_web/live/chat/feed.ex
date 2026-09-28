@@ -10,10 +10,26 @@ defmodule BanterWeb.ChatLive.Feed do
   whether a message renders compact depends on the one above it; and knowing
   which messages a change affects, so only those are redrawn.
 
-  The browser's copy is bounded too. While the reader is at the bottom
-  (`:feed_at_bottom`, reported by the FeedEnd hook), a live message that
-  takes the feed past 250 rendered messages trims the oldest back to 200.
-  Scrolled-up history is never trimmed, since that's what's being read.
+  ## A window, not the whole channel
+
+  The browser holds at most 250 messages, whichever way the reader goes.
+  Past that the far end is trimmed back to 200: loading older messages drops
+  the newest, loading newer ones drops the oldest. Dropping the newest leaves
+  the feed *detached* from the present (`:has_newer_messages`) — there are
+  messages below what's on screen, and scrolling down loads them back.
+
+  A live message is placed according to where the reader is:
+
+  - detached: held, and counted (`:unseen_count`) for the "new messages" bar;
+  - at the bottom (`:feed_at_bottom`, from the FeedEnd hook): appended, and
+    the top trimmed if that takes the feed past the cap;
+  - scrolled up with room to spare: appended;
+  - scrolled up with the feed full: held, and the feed detaches. Trimming the
+    top here would pull away what's being read.
+
+  Because every path keeps to the cap, the feed never sits over it waiting
+  for a trim — there's nothing to catch up on when the reader returns to the
+  bottom.
 
   The one non-obvious rule: stream items don't re-render when assigns change.
   Anything that alters how a rendered message looks — an edit, its menu
@@ -21,10 +37,16 @@ defmodule BanterWeb.ChatLive.Feed do
   again. `rerender/2` does that, re-reading the messages by id.
   """
 
-  import Phoenix.Component, only: [assign: 3]
+  import Phoenix.Component, only: [assign: 2, assign: 3]
 
   import Phoenix.LiveView,
-    only: [stream_configure: 3, stream: 4, stream_insert: 4, stream_delete_by_dom_id: 3]
+    only: [
+      push_event: 3,
+      stream_configure: 3,
+      stream: 4,
+      stream_insert: 4,
+      stream_delete_by_dom_id: 3
+    ]
 
   alias Banter.Chat
 
@@ -37,13 +59,16 @@ defmodule BanterWeb.ChatLive.Feed do
   # author, renders compact — no avatar or name.
   @group_minutes 5
 
+  # Messages per page; the read actions fetch one more to tell if there's
+  # another page.
+  @page_size 50
+
   # Trimming starts past @trim_at and cuts back to @window. The gap between
   # them is a page, so a busy channel trims (and redraws its new first
-  # message) once per 50 messages rather than on every one.
+  # message) once per page rather than on every message.
   @window 200
   @trim_at 250
 
-  def loads, do: @loads
   def window, do: @window
   def trim_at, do: @trim_at
 
@@ -54,52 +79,93 @@ defmodule BanterWeb.ChatLive.Feed do
     socket
     |> stream_configure(:messages, dom_id: &dom_id(&1.id))
     |> stream(:messages, [], [])
-    |> assign(:rendered_messages, [])
-    |> assign(:feed_at_bottom, true)
+    |> reset_state([])
   end
 
   @doc """
-  Replaces the feed with `messages`, oldest first. A freshly loaded channel
-  opens scrolled to the bottom, so the reader counts as at the bottom.
+  Replaces the feed with `messages`, oldest first, as the present — nothing
+  newer, reader at the bottom (a channel opens scrolled there).
   """
   def reset(socket, messages) do
-    entries = Enum.map(messages, &entry/1)
-
     socket
     |> stream(:messages, items(messages, nil), reset: true)
-    |> assign(:rendered_messages, entries)
-    |> assign(:feed_at_bottom, true)
+    |> reset_state(messages)
+  end
+
+  @doc "Opens the channel on its newest page. Also what \"Jump to present\" does."
+  def load_latest(socket, channel_id) do
+    {:ok, rows} = Chat.list_channel_messages(%{channel_id: channel_id}, actor: actor(socket))
+    {page, more?} = page(rows)
+
+    socket
+    |> reset(page |> Enum.reverse() |> load(socket))
+    |> assign(:has_more_messages, more?)
+  end
+
+  @doc "Loads the page above the first rendered message. Past the cap, drops the newest."
+  def load_older(socket) do
+    {:ok, rows} =
+      Chat.list_channel_messages(
+        %{channel_id: channel_id(socket), before_id: socket.assigns.messages_cursor},
+        actor: actor(socket)
+      )
+
+    {page, more?} = page(rows)
+    older = page |> Enum.reverse() |> load(socket)
+
+    socket
+    |> prepend(older)
+    |> assign(:messages_cursor, first_id(older) || socket.assigns.messages_cursor)
+    |> assign(:has_more_messages, more?)
+    |> trim_bottom()
   end
 
   @doc """
-  Trims the oldest messages if the reader is at the bottom and more than
-  `trim_at/0` are rendered, keeping the newest `window/0`.
-
-  The trimmed messages become the next page up: the paging cursor moves to
-  the new first message and `:has_more_messages` turns on, so scrolling up
-  loads them back. The new first message is redrawn, since it may have been
-  drawn compact under one that's now gone.
+  Loads the page below the last rendered message, for a detached feed. Past
+  the cap, drops the oldest; reaching the present reattaches.
   """
-  def trim(socket) do
-    entries = socket.assigns.rendered_messages
+  def load_newer(socket) do
+    {:ok, rows} =
+      Chat.list_newer_channel_messages(
+        %{channel_id: channel_id(socket), after_id: socket.assigns.newer_cursor},
+        actor: actor(socket)
+      )
 
-    if socket.assigns.feed_at_bottom and length(entries) > @trim_at do
-      {trimmed, kept} = Enum.split(entries, length(entries) - @window)
-      [first | _] = kept
+    {page, more?} = page(rows)
+    newer = load(page, socket)
 
-      trimmed
-      |> Enum.reduce(socket, &stream_delete_by_dom_id(&2, :messages, dom_id(&1.id)))
-      |> assign(:rendered_messages, kept)
-      |> assign(:messages_cursor, first.id)
-      |> assign(:has_more_messages, true)
-      |> rerender([first.id])
-    else
-      socket
+    socket
+    |> append_page(newer)
+    |> caught_up(newer, more?)
+    |> trim_top()
+  end
+
+  @doc "Places a message that has just been posted. See the moduledoc for the rule."
+  def live_message(socket, message) do
+    %{rendered_messages: entries, has_newer_messages: detached?} = socket.assigns
+
+    cond do
+      detached? ->
+        update_unseen(socket, 1)
+
+      socket.assigns.feed_at_bottom ->
+        socket
+        |> append(load(message, socket))
+        |> trim_top()
+        |> push_event("scroll_to_bottom", %{})
+
+      length(entries) < @trim_at ->
+        socket
+        |> append(load(message, socket))
+        |> push_event("scroll_to_bottom", %{})
+
+      true ->
+        socket |> detach() |> update_unseen(1)
     end
   end
 
-  @doc "Adds a message below everything rendered."
-  def append(socket, message) do
+  # Adds a message below everything rendered.
+  defp append(socket, message) do
     if rendered?(socket, message.id) do
       replace(socket, message)
     else
@@ -111,15 +177,12 @@ defmodule BanterWeb.ChatLive.Feed do
     end
   end
 
-  @doc """
-  Adds `older` (oldest first) above everything rendered.
+  # Adds `older` (oldest first) above everything rendered. The message that
+  # used to be first now has one above it, so it's redrawn — it may join the
+  # run of the last older message.
+  defp prepend(socket, []), do: socket
 
-  The message that used to be first now has one above it, so it's redrawn —
-  it may join the run of the last older message.
-  """
-  def prepend(socket, []), do: socket
-
-  def prepend(socket, older) do
+  defp prepend(socket, older) do
     old_first = List.first(socket.assigns.rendered_messages)
 
     socket
@@ -198,6 +261,120 @@ defmodule BanterWeb.ChatLive.Feed do
   end
 
   # ── Private ─────────────────────────────────────────────────────────
+
+  defp reset_state(socket, messages) do
+    socket
+    |> assign(:rendered_messages, Enum.map(messages, &entry/1))
+    |> assign(:feed_at_bottom, true)
+    |> assign(:messages_cursor, first_id(messages))
+    |> assign(:has_more_messages, false)
+    |> attach()
+  end
+
+  # Oldest first; `older` and `newer` pages are ordered this way too.
+  defp page(rows), do: {Enum.take(rows, @page_size), length(rows) > @page_size}
+
+  defp load([], _socket), do: []
+  defp load(messages, socket), do: Ash.load!(messages, @loads, actor: actor(socket))
+
+  defp actor(socket), do: socket.assigns.current_user
+  defp channel_id(socket), do: socket.assigns.current_channel.id
+  defp first_id([first | _]), do: first.id
+  defp first_id([]), do: nil
+
+  defp append_page(socket, []), do: socket
+
+  defp append_page(socket, newer) do
+    entries = socket.assigns.rendered_messages
+
+    socket
+    |> stream(:messages, items(newer, List.last(entries)), at: -1)
+    |> assign(:rendered_messages, entries ++ Enum.map(newer, &entry/1))
+  end
+
+  # Keeps the newest @window once past the cap. The trimmed messages become
+  # the next page up, and the new first message is redrawn — it may have been
+  # drawn compact under one that's gone.
+  defp trim_top(socket) do
+    entries = socket.assigns.rendered_messages
+
+    if length(entries) > @trim_at do
+      {trimmed, [first | _] = kept} = Enum.split(entries, length(entries) - @window)
+
+      socket
+      |> delete_entries(trimmed)
+      |> assign(:rendered_messages, kept)
+      |> assign(:messages_cursor, first.id)
+      |> assign(:has_more_messages, true)
+      |> rerender([first.id])
+    else
+      socket
+    end
+  end
+
+  # Keeps the oldest @window once past the cap. What's trimmed is now below
+  # the feed, so it detaches. Nothing needs redrawing: grouping looks upward.
+  defp trim_bottom(socket) do
+    entries = socket.assigns.rendered_messages
+
+    if length(entries) > @trim_at do
+      {kept, trimmed} = Enum.split(entries, @window)
+
+      socket
+      |> detach()
+      |> delete_entries(trimmed)
+      |> assign(:rendered_messages, kept)
+      |> assign(:newer_cursor, List.last(kept).id)
+    else
+      socket
+    end
+  end
+
+  defp delete_entries(socket, entries) do
+    Enum.reduce(entries, socket, &stream_delete_by_dom_id(&2, :messages, dom_id(&1.id)))
+  end
+
+  # Detached: messages exist below the last rendered one. `seen_through_id` is
+  # the newest message the reader had on screen when it happened — anything
+  # after it counts as unseen once loaded. Detaching again while already
+  # detached keeps the original mark.
+  defp detach(%{assigns: %{has_newer_messages: true}} = socket), do: socket
+
+  defp detach(socket) do
+    last_id = socket.assigns.rendered_messages |> List.last() |> Map.get(:id)
+
+    assign(socket,
+      has_newer_messages: true,
+      newer_cursor: last_id,
+      seen_through_id: last_id
+    )
+  end
+
+  defp attach(socket) do
+    assign(socket,
+      has_newer_messages: false,
+      newer_cursor: nil,
+      seen_through_id: nil,
+      unseen_count: 0
+    )
+  end
+
+  # After loading a newer page: the ones posted since detaching are seen now,
+  # and a short page means the present has been reached.
+  defp caught_up(socket, _newer, false), do: attach(socket)
+
+  defp caught_up(socket, newer, true) do
+    seen_through = socket.assigns.seen_through_id
+    now_seen = Enum.count(newer, &(&1.id > seen_through))
+
+    socket
+    |> assign(:newer_cursor, List.last(newer).id)
+    |> update_unseen(-now_seen)
+  end
+
+  defp update_unseen(socket, by) do
+    assign(socket, :unseen_count, max(socket.assigns.unseen_count + by, 0))
+  end
 
   # Stream items for consecutive messages, the first following `prev`.
   defp items(messages, prev) do

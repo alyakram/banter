@@ -801,17 +801,24 @@ defmodule BanterWeb.ChatLiveTest do
       assert rendered(view) == Feed.window() + 50
     end
 
-    test "scrolled up, nothing is trimmed until the reader is back at the bottom",
+    test "scrolled up with the feed full, a new message waits below instead",
          %{view: view} = ctx do
       render_hook(view, "feed_at_bottom", %{"at_bottom" => false})
-      post_live(ctx, "while reading history")
+      held = post_live(ctx, "while reading history")
 
-      assert rendered(view) == Feed.trim_at() + 1
+      # Neither appended past the cap nor trimmed from the top, which could be
+      # what's being read. The feed detaches and the bar says why.
+      assert rendered(view) == Feed.trim_at()
+      refute has_element?(view, "#message-#{held.id}")
+      assert has_element?(view, "#message-feed[data-has-newer=true]")
+      assert has_element?(view, "#jump-to-present", "1 new message")
 
-      render_hook(view, "feed_at_bottom", %{"at_bottom" => true})
-      post_live(ctx, "back at the bottom")
+      # Scrolling down brings it in; that's past the cap, so the top goes.
+      render_hook(view, "load_newer_messages", %{})
 
+      assert has_element?(view, "#message-#{held.id}")
       assert rendered(view) == Feed.window()
+      refute has_element?(view, "#jump-to-present")
     end
 
     test "opening another channel counts as being at the bottom again", %{
@@ -826,6 +833,129 @@ defmodule BanterWeb.ChatLiveTest do
 
       # A channel opens scrolled to the bottom, and the hook assumes so too.
       assert :sys.get_state(view.pid).socket.assigns.feed_at_bottom
+    end
+  end
+
+  describe "the two-way window" do
+    alias BanterWeb.ChatLive.Feed
+
+    # A page more than the cap: paging all the way up has to drop the newest.
+    setup %{conn: conn} do
+      ctx = signed_in_with_server(conn)
+
+      messages =
+        for n <- 1..(Feed.trim_at() + 50) do
+          message_fixture(ctx.channel, ctx.user, %{content: "message #{n}"})
+        end
+
+      {:ok, view, _html} = live(ctx.conn, ~p"/chat/#{ctx.server.id}/#{ctx.channel.id}")
+
+      ctx |> Map.put(:view, view) |> Map.put(:messages, messages)
+    end
+
+    defp detached?(view), do: has_element?(view, "#message-feed[data-has-newer=true]")
+
+    test "paging back past the cap drops the newest and detaches from the present", %{
+      view: view,
+      messages: messages
+    } do
+      page_in_everything(view)
+
+      assert rendered(view) == Feed.window()
+      assert has_element?(view, "#message-#{hd(messages).id}")
+      refute has_element?(view, "#message-#{Enum.at(messages, Feed.window()).id}")
+      assert detached?(view)
+      assert has_element?(view, "#jump-to-present", "You're viewing older messages")
+    end
+
+    test "new messages while detached are held and counted", %{view: view} = ctx do
+      page_in_everything(view)
+
+      first = post_live(ctx, "posted while away")
+      assert has_element?(view, "#jump-to-present", "1 new message")
+
+      post_live(ctx, "and another")
+      assert has_element?(view, "#jump-to-present", "2 new messages")
+
+      refute has_element?(view, "#message-#{first.id}")
+      assert rendered(view) == Feed.window()
+    end
+
+    test "scrolling back down pages toward the present and reattaches there",
+         %{view: view, messages: messages} = ctx do
+      page_in_everything(view)
+      live_one = post_live(ctx, "posted while away")
+
+      # 201-250: nothing trimmed yet, still detached, still one unseen.
+      render_hook(view, "load_newer_messages", %{})
+      assert rendered(view) == Feed.trim_at()
+      assert has_element?(view, "#jump-to-present", "1 new message")
+
+      # 251-300 takes it past the cap, so the top goes; the live one is still
+      # below. Those 50 were on screen before detaching, so they aren't "new".
+      render_hook(view, "load_newer_messages", %{})
+      assert rendered(view) == Feed.window()
+      refute has_element?(view, "#message-#{hd(messages).id}")
+      assert has_element?(view, "#jump-to-present", "1 new message")
+
+      # The live one: the present, so the feed reattaches.
+      render_hook(view, "load_newer_messages", %{})
+      assert has_element?(view, "#message-#{live_one.id}")
+      refute detached?(view)
+      refute has_element?(view, "#jump-to-present")
+
+      # Attached again, the next message arrives normally.
+      next = post_live(ctx, "back in the flow")
+      assert has_element?(view, "#message-#{next.id}")
+    end
+
+    test "jump to present reopens the newest page", %{view: view, messages: messages} do
+      page_in_everything(view)
+
+      view |> element("#jump-to-present button") |> render_click()
+
+      assert rendered(view) == 50
+      assert has_element?(view, "#message-#{List.last(messages).id}")
+      refute detached?(view)
+      refute has_element?(view, "#jump-to-present")
+      assert has_element?(view, "#message-feed[data-has-more=true]")
+      assert_push_event(view, "scroll_to_present", %{})
+    end
+
+    test "the feed never holds more than the cap, whatever the reader does",
+         %{view: view} = ctx do
+      # Item 3 of the follow-up: with every path trimming as it goes, there's
+      # never an over-full feed waiting for a trim when the reader gets back to
+      # the bottom. Checked after every step of a long, mixed session.
+      within_cap = fn -> assert rendered(view) <= Feed.trim_at() end
+
+      page_up = fn ->
+        render_click(view, "load_more_messages", %{})
+        within_cap.()
+      end
+
+      for _ <- 1..6, do: page_up.()
+
+      for n <- 1..3 do
+        post_live(ctx, "away #{n}")
+        within_cap.()
+      end
+
+      Stream.repeatedly(fn -> render_hook(view, "load_newer_messages", %{}) end)
+      |> Stream.each(fn _ -> within_cap.() end)
+      |> Enum.find(fn _ -> not detached?(view) end)
+
+      # Back at the present and at the bottom: a busy stretch of live traffic.
+      render_hook(view, "feed_at_bottom", %{"at_bottom" => true})
+
+      for n <- 1..120 do
+        post_live(ctx, "busy #{n}")
+        within_cap.()
+      end
+
+      # And back up far enough to cross the cap from the other side.
+      for _ <- 1..4, do: page_up.()
+      assert detached?(view)
     end
   end
 

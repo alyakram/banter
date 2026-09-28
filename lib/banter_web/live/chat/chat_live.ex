@@ -62,8 +62,6 @@ defmodule BanterWeb.ChatLive do
       |> assign(:show_create_channel_modal, false)
       |> assign(:page_title, "Banter")
       |> assign(:subscribed_guild_id, nil)
-      |> assign(:messages_cursor, nil)
-      |> assign(:has_more_messages, false)
       |> assign(:loading_more_messages, false)
       |> assign(:connected_users, Presence.connected_user_ids())
       |> assign(:show_status_menu, false)
@@ -412,33 +410,33 @@ defmodule BanterWeb.ChatLive do
     if socket.assigns.has_more_messages &&
          !socket.assigns.loading_more_messages &&
          socket.assigns.current_channel do
-      socket = assign(socket, :loading_more_messages, true)
-
-      actor = socket.assigns.current_user
-
-      {:ok, msgs} =
-        Chat.list_channel_messages(
-          %{
-            channel_id: socket.assigns.current_channel.id,
-            before_id: socket.assigns.messages_cursor
-          },
-          actor: actor
-        )
-
-      has_more = length(msgs) > 50
-      msgs = Enum.take(msgs, 50)
-      new_cursor = if msgs != [], do: List.last(msgs).id, else: nil
-
-      older_messages = Ash.load!(Enum.reverse(msgs), Feed.loads(), actor: actor)
-
       socket =
         socket
-        |> Feed.prepend(older_messages)
-        |> assign(:messages_cursor, new_cursor || socket.assigns.messages_cursor)
-        |> assign(:has_more_messages, has_more)
+        |> assign(:loading_more_messages, true)
+        |> Feed.load_older()
         |> assign(:loading_more_messages, false)
 
       {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # The MessageFeed hook, near the bottom of a detached feed.
+  def handle_event("load_newer_messages", _, socket) do
+    if socket.assigns.has_newer_messages && socket.assigns.current_channel do
+      {:noreply, Feed.load_newer(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("jump_to_present", _, socket) do
+    if socket.assigns.current_channel do
+      {:noreply,
+       socket
+       |> Feed.load_latest(socket.assigns.current_channel.id)
+       |> push_event("scroll_to_present", %{})}
     else
       {:noreply, socket}
     end
@@ -779,13 +777,9 @@ defmodule BanterWeb.ChatLive do
   def handle_info({:guild_event, {:message_create, message}}, socket) do
     # Only add message if it's for the current channel
     if socket.assigns.current_channel && message.channel_id == socket.assigns.current_channel.id do
-      # Load author and attachments for display. Needs the actor: reply_to is
-      # itself a Message, and message reads are membership-gated.
-      {:ok, message} = Ash.load(message, Feed.loads(), actor: socket.assigns.current_user)
-
-      socket = socket |> Feed.append(message) |> Feed.trim()
-
-      {:noreply, push_event(socket, "scroll_to_bottom", %{})}
+      # Appended, trimmed around, or held below a detached feed — depending on
+      # where the reader is.
+      {:noreply, Feed.live_message(socket, message)}
     else
       {:noreply, socket}
     end
@@ -1158,20 +1152,9 @@ defmodule BanterWeb.ChatLive do
   defp load_channel(socket, channel_id) do
     case Chat.get_channel(channel_id, actor: socket.assigns.current_user) do
       {:ok, channel} ->
-        actor = socket.assigns.current_user
-        {:ok, msgs} = Chat.list_channel_messages(%{channel_id: channel_id}, actor: actor)
-
-        has_more = length(msgs) > 50
-        msgs = Enum.take(msgs, 50)
-        cursor = if msgs != [], do: List.last(msgs).id, else: nil
-
-        messages = Ash.load!(Enum.reverse(msgs), Feed.loads(), actor: actor)
-
         socket
         |> assign(:current_channel, channel)
-        |> Feed.reset(messages)
-        |> assign(:messages_cursor, cursor)
-        |> assign(:has_more_messages, has_more)
+        |> Feed.load_latest(channel_id)
         |> assign(:loading_more_messages, false)
         |> assign(:typing_users, %{})
 
@@ -1179,8 +1162,6 @@ defmodule BanterWeb.ChatLive do
         socket
         |> assign(:current_channel, nil)
         |> Feed.reset([])
-        |> assign(:messages_cursor, nil)
-        |> assign(:has_more_messages, false)
         |> assign(:loading_more_messages, false)
     end
   end
@@ -1237,6 +1218,8 @@ defmodule BanterWeb.ChatLive do
         uploads={@uploads}
         can_moderate={!!(@current_server && @current_user && @current_server.owner_id == @current_user.id)}
         has_more_messages={@has_more_messages}
+        has_newer_messages={@has_newer_messages}
+        unseen_count={@unseen_count}
         loading_more_messages={@loading_more_messages}
         current_user={@current_user}
         editing_message_id={@editing_message_id}

@@ -158,19 +158,12 @@ Hooks.VoiceChannel = {
 Hooks.MessageFeed = {
   mounted() {
     this.loadingMore = false;
+    this.loadingNewer = false;
     this.scrollToBottom();
     this.remember();
 
     this.el.addEventListener("scroll", () => {
-      if (
-        this.el.scrollTop < 200 &&
-        !this.loadingMore &&
-        this.el.dataset.hasMore === "true"
-      ) {
-        this.loadingMore = true;
-        this.pushEvent("load_more_messages", {});
-      }
-
+      this.maybeLoad();
       this.remember();
     });
 
@@ -191,6 +184,12 @@ Hooks.MessageFeed = {
         requestAnimationFrame(() => this.scrollToBottom());
       }
     });
+
+    // "Jump to present" replaced the feed with the newest page.
+    this.handleEvent("scroll_to_present", () => {
+      this.scrollToBottom();
+      this.remember();
+    });
   },
 
   beforeUpdate() {
@@ -198,12 +197,30 @@ Hooks.MessageFeed = {
   },
 
   updated() {
+    this.loadingMore = false;
+    this.loadingNewer = false;
+
     if (this.el.dataset.channelId !== this._oldChannelId) {
-      this.loadingMore = false;
       this.scrollToBottom();
       this.remember();
-    } else if (this.loadingMore) {
-      this.loadingMore = false;
+    }
+  },
+
+  // Asks for the page above near the top, or — while the feed is detached from
+  // the present — the page below near the bottom. Never both at once: each
+  // push locks this element until its reply, and a page that arrives while
+  // the other request holds the lock is patched in without its position.
+  maybeLoad() {
+    if (this.loadingMore || this.loadingNewer) return;
+
+    const { hasMore, hasNewer } = this.el.dataset;
+
+    if (this.el.scrollTop < 200 && hasMore === "true") {
+      this.loadingMore = true;
+      this.pushEvent("load_more_messages", {});
+    } else if (this.isNearBottom() && hasNewer === "true") {
+      this.loadingNewer = true;
+      this.pushEvent("load_newer_messages", {});
     }
   },
 
@@ -211,10 +228,12 @@ Hooks.MessageFeed = {
     this.mutations.disconnect();
   },
 
-  // A reader at the bottom follows new messages down. Anyone else stays on
-  // the message they were looking at, wherever the list changed around it.
+  // A reader at the bottom of an attached feed follows new messages down.
+  // Anyone else — including someone at the bottom of a detached feed, who is
+  // about to get the next page below — stays on the message they were looking
+  // at, wherever the list changed around it.
   keepPlace() {
-    if (this.wasNearBottom) {
+    if (this.wasFollowing) {
       this.scrollToBottom();
     } else if (this.anchor?.isConnected) {
       this.el.scrollTop += this.anchor.getBoundingClientRect().top - this.anchorTop;
@@ -223,10 +242,10 @@ Hooks.MessageFeed = {
     this.remember();
   },
 
-  // Where the reader is, as of the last scroll or change: at the bottom or
-  // not, and which message they're looking at and where it sits.
+  // Where the reader is, as of the last scroll or change: following the
+  // present or not, and which message they're looking at and where it sits.
   remember() {
-    this.wasNearBottom = this.isNearBottom();
+    this.wasFollowing = this.isNearBottom() && this.el.dataset.hasNewer !== "true";
     this.anchor = this.anchorMessage();
     this.anchorTop = this.anchor?.getBoundingClientRect().top;
   },

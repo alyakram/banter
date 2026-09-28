@@ -558,6 +558,9 @@ defmodule BanterWeb.ChatLive.Components do
   attr :message_input, :string, default: ""
   attr :uploads, :map, required: true
   attr :has_more_messages, :boolean, default: false
+  # Detached from the present: messages exist below what's on screen.
+  attr :has_newer_messages, :boolean, default: false
+  attr :unseen_count, :integer, default: 0
   attr :loading_more_messages, :boolean, default: false
   attr :current_user, :map, default: nil
   attr :editing_message_id, :string, default: nil
@@ -579,6 +582,7 @@ defmodule BanterWeb.ChatLive.Components do
           messages={@messages}
           channel={@current_channel}
           has_more={@has_more_messages}
+          has_newer={@has_newer_messages}
           loading_more={@loading_more_messages}
           current_user={@current_user}
           editing_message_id={@editing_message_id}
@@ -587,6 +591,7 @@ defmodule BanterWeb.ChatLive.Components do
           selected_message_id={@selected_message_id}
           can_moderate={@can_moderate}
         />
+        <.jump_to_present :if={@has_newer_messages} unseen_count={@unseen_count} />
         <.message_input channel={@current_channel} message_input={@message_input} uploads={@uploads} replying_to={@replying_to} typing_users={@typing_users} />
       <% else %>
         <%!-- Mobile hamburger shown in empty state too --%>
@@ -639,6 +644,7 @@ defmodule BanterWeb.ChatLive.Components do
   attr :messages, :any, required: true
   attr :channel, :map, required: true
   attr :has_more, :boolean, default: false
+  attr :has_newer, :boolean, default: false
   attr :loading_more, :boolean, default: false
   attr :current_user, :map, default: nil
   attr :editing_message_id, :string, default: nil
@@ -658,6 +664,7 @@ defmodule BanterWeb.ChatLive.Components do
       phx-hook="MessageFeed"
       data-channel-id={@channel.id}
       data-has-more={to_string(@has_more)}
+      data-has-newer={to_string(@has_newer)}
     >
       <%= if @loading_more do %>
         <div class="flex justify-center py-3">
@@ -699,6 +706,32 @@ defmodule BanterWeb.ChatLive.Components do
 
       <%!-- Reports whether the reader is at the bottom (see the FeedEnd hook). --%>
       <div id="message-feed-end" phx-hook="FeedEnd" class="h-px"></div>
+    </div>
+    """
+  end
+
+  @doc """
+  Bar shown while the feed is detached from the present — the reader paged
+  back far enough that the newest messages were dropped, or new ones arrived
+  while they were reading history. The feed doesn't add messages below in
+  that state, so this is how the reader learns of them and gets back.
+  """
+  attr :unseen_count, :integer, required: true
+
+  def jump_to_present(assigns) do
+    ~H"""
+    <div
+      id="jump-to-present"
+      class="mx-4 mb-2 flex items-center justify-between gap-3 rounded-lg bg-primary/15 px-3 py-1.5 text-xs text-base-content"
+    >
+      <span>{detached_label(@unseen_count)}</span>
+      <button
+        type="button"
+        phx-click="jump_to_present"
+        class="font-semibold text-primary hover:underline"
+      >
+        Jump to present
+      </button>
     </div>
     """
   end
@@ -1616,6 +1649,10 @@ defmodule BanterWeb.ChatLive.Components do
       _ -> "Several people are typing..."
     end
   end
+
+  defp detached_label(0), do: "You're viewing older messages"
+  defp detached_label(1), do: "1 new message"
+  defp detached_label(count), do: "#{count} new messages"
 
   defp has_attachments?(%{attachments: attachments}) when is_list(attachments) do
     length(attachments) > 0

@@ -217,6 +217,46 @@ defmodule Banter.Chat.MessageTest do
     end
   end
 
+  describe "by_ids" do
+    test "a member gets exactly the messages asked for", %{author: author, channel: channel} do
+      {:ok, one} = send_message(message_attrs(channel, author, %{content: "1"}), actor: author)
+      {:ok, _two} = send_message(message_attrs(channel, author, %{content: "2"}), actor: author)
+      {:ok, three} = send_message(message_attrs(channel, author, %{content: "3"}), actor: author)
+
+      assert {:ok, found} = Chat.list_messages_by_ids([one.id, three.id], actor: author)
+      assert found |> Enum.map(& &1.id) |> Enum.sort() == Enum.sort([one.id, three.id])
+    end
+
+    test "a non-member gets nothing back, even naming the ids", %{
+      author: author,
+      channel: channel
+    } do
+      outsider = user_fixture()
+      {:ok, message} = send_message(message_attrs(channel, author), actor: author)
+
+      # Read policies filter rather than raise.
+      assert {:ok, []} = Chat.list_messages_by_ids([message.id], actor: outsider)
+    end
+
+    test "mixing in another server's message returns only the readable ones", %{
+      author: author,
+      channel: channel
+    } do
+      other_owner = user_fixture()
+      {other_server, _} = server_with_owner_fixture(other_owner)
+      other_channel = channel_fixture(other_server, other_owner)
+      foreign = message_fixture(other_channel, other_owner)
+      {:ok, mine} = send_message(message_attrs(channel, author), actor: author)
+
+      assert {:ok, [found]} = Chat.list_messages_by_ids([mine.id, foreign.id], actor: author)
+      assert found.id == mine.id
+    end
+
+    test "an empty list reads nothing", %{author: author} do
+      assert {:ok, []} = Chat.list_messages_by_ids([], actor: author)
+    end
+  end
+
   describe "by_channel" do
     test "returns the channel's messages newest first", %{author: author, channel: channel} do
       {:ok, first} = send_message(message_attrs(channel, author, %{content: "1"}), actor: author)

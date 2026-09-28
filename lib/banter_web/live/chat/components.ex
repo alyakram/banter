@@ -631,8 +631,12 @@ defmodule BanterWeb.ChatLive.Components do
 
   @doc """
   Message feed with scrollable message list.
+
+  `messages` is the `@streams.messages` stream; each item carries its message
+  and whether it continues the previous author's run (see
+  `BanterWeb.ChatLive.Feed`).
   """
-  attr :messages, :list, required: true
+  attr :messages, :any, required: true
   attr :channel, :map, required: true
   attr :has_more, :boolean, default: false
   attr :loading_more, :boolean, default: false
@@ -647,7 +651,7 @@ defmodule BanterWeb.ChatLive.Components do
     ~H"""
     <div
       id="message-feed"
-      class="flex-1 overflow-y-auto px-4 py-4 space-y-1"
+      class="flex-1 overflow-y-auto px-4 py-4"
       phx-hook="MessageFeed"
       data-channel-id={@channel.id}
       data-has-more={to_string(@has_more)}
@@ -658,19 +662,15 @@ defmodule BanterWeb.ChatLive.Components do
         </div>
       <% end %>
 
-      <%= if @messages == [] do %>
+      <div id="messages" phx-update="stream" class="min-h-full flex flex-col space-y-1">
+        <%!-- Not a stream item: shown only while it's the container's only child. --%>
         <.empty_channel_message channel={@channel} />
-      <% else %>
-        <%= for {message, i} <- Enum.with_index(@messages) do %>
-          <% prev = if i > 0, do: Enum.at(@messages, i - 1) %>
-          <% same_author = prev && prev.author_id == message.author_id %>
-          <% time_gap = prev && DateTime.diff(message.inserted_at, prev.inserted_at, :minute) > 5 %>
-          <% compact = same_author && !time_gap %>
 
-          <%= if !compact do %>
-            <.message_full
-              message={message}
-              show_divider={i > 0}
+        <%= for {dom_id, item} <- @messages do %>
+          <%= if item.compact do %>
+            <.message_compact
+              id={dom_id}
+              message={item.message}
               current_user={@current_user}
               editing_message_id={@editing_message_id}
               editing_content={@editing_content}
@@ -679,8 +679,10 @@ defmodule BanterWeb.ChatLive.Components do
               can_moderate={@can_moderate}
             />
           <% else %>
-            <.message_compact
-              message={message}
+            <.message_full
+              id={dom_id}
+              message={item.message}
+              show_divider={item.divider}
               current_user={@current_user}
               editing_message_id={@editing_message_id}
               editing_content={@editing_content}
@@ -690,7 +692,7 @@ defmodule BanterWeb.ChatLive.Components do
             />
           <% end %>
         <% end %>
-      <% end %>
+      </div>
     </div>
     """
   end
@@ -702,7 +704,10 @@ defmodule BanterWeb.ChatLive.Components do
 
   def empty_channel_message(assigns) do
     ~H"""
-    <div class="flex flex-col items-center justify-center h-full text-center">
+    <div
+      id="messages-empty"
+      class="hidden only:flex flex-1 flex-col items-center justify-center text-center"
+    >
       <div class="w-16 h-16 rounded-full bg-neutral flex items-center justify-center mb-4">
         <span class="text-3xl">#</span>
       </div>
@@ -719,6 +724,7 @@ defmodule BanterWeb.ChatLive.Components do
   @doc """
   Full message with avatar and username.
   """
+  attr :id, :string, required: true
   attr :message, :map, required: true
   attr :show_divider, :boolean, default: false
   attr :current_user, :map, default: nil
@@ -731,7 +737,8 @@ defmodule BanterWeb.ChatLive.Components do
   def message_full(assigns) do
     ~H"""
     <div
-      id={"message-#{@message.id}"}
+      id={@id}
+      data-layout="full"
       class={[
         "flex gap-3 hover:bg-base-200/50 px-2 py-1 rounded-lg group items-start",
         if(@show_divider, do: "mt-3")
@@ -812,6 +819,7 @@ defmodule BanterWeb.ChatLive.Components do
   @doc """
   Compact message without avatar (for consecutive messages from same author).
   """
+  attr :id, :string, required: true
   attr :message, :map, required: true
   attr :current_user, :map, default: nil
   attr :editing_message_id, :string, default: nil
@@ -822,7 +830,11 @@ defmodule BanterWeb.ChatLive.Components do
 
   def message_compact(assigns) do
     ~H"""
-    <div id={"message-#{@message.id}"} class="flex gap-3 hover:bg-base-200/50 px-2 py-0.5 rounded-lg group items-start">
+    <div
+      id={@id}
+      data-layout="compact"
+      class="flex gap-3 hover:bg-base-200/50 px-2 py-0.5 rounded-lg group items-start"
+    >
       <div class="w-9 flex-shrink-0 flex justify-center pt-1.5">
         <span class="text-[10px] text-base-content/40 opacity-0 group-hover:opacity-100 transition-opacity">
           <%= Calendar.strftime(@message.inserted_at, "%H:%M") %>

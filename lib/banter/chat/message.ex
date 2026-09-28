@@ -227,6 +227,14 @@ defmodule Banter.Chat.Message do
       filter expr(id == ^arg(:id))
     end
 
+    # Re-reads specific messages. The chat feed holds no messages in memory, so
+    # when one on screen needs redrawing — an edit, a menu opening, its
+    # neighbour being deleted — it's fetched again by id.
+    read :by_ids do
+      argument :ids, {:array, :uuid}, allow_nil?: false
+      filter expr(id in ^arg(:ids))
+    end
+
     read :by_channel do
       argument :channel_id, :uuid, allow_nil?: false
       argument :before_id, :uuid, allow_nil?: true

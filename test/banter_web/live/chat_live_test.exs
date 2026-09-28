@@ -648,12 +648,13 @@ defmodule BanterWeb.ChatLiveTest do
       ctx = signed_in_with_server(conn)
 
       # 60 messages: more than the 50 the view shows, so a second page exists.
-      for n <- 1..60 do
-        message_fixture(ctx.channel, ctx.user, %{content: "message #{n}"})
-      end
+      messages =
+        for n <- 1..60 do
+          message_fixture(ctx.channel, ctx.user, %{content: "message #{n}"})
+        end
 
       {:ok, view, _html} = live(ctx.conn, ~p"/chat/#{ctx.server.id}/#{ctx.channel.id}")
-      Map.put(ctx, :view, view)
+      ctx |> Map.put(:view, view) |> Map.put(:messages, messages)
     end
 
     test "the newest 50 are shown initially, not the oldest", %{view: view} do
@@ -671,6 +672,168 @@ defmodule BanterWeb.ChatLiveTest do
 
       assert html =~ "message 1"
       assert html =~ "message 60"
+    end
+
+    test "the older page lands above, in order", %{view: view, messages: messages} do
+      render_click(view, "load_more_messages", %{})
+
+      # Positions of each message's element in the rendered page. Prepending a
+      # list at the top of a stream reverses it unless done carefully.
+      ids = Enum.map(messages, &"id=\"message-#{&1.id}\"")
+      html = render(view)
+      positions = Enum.map(ids, fn id -> :binary.match(html, id) |> elem(0) end)
+
+      assert positions == Enum.sort(positions)
+    end
+
+    test "the message that was first joins the run above it once older ones load", %{
+      view: view,
+      messages: messages
+    } do
+      # All 60 are one author, seconds apart: one run. The 11th was first on
+      # screen, so it had to carry the header; with the 10th above it, it
+      # continues the run instead.
+      eleventh = Enum.at(messages, 10)
+      assert has_element?(view, "#message-#{eleventh.id}[data-layout=full]")
+
+      render_click(view, "load_more_messages", %{})
+
+      assert has_element?(view, "#message-#{eleventh.id}[data-layout=compact]")
+    end
+
+    test "an edit to a message that isn't on screen isn't added to it", %{
+      view: view,
+      server: server,
+      user: user,
+      messages: [first | _]
+    } do
+      {:ok, _} = Banter.GuildServer.edit_message(server.id, first.id, "edited far back", user)
+
+      refute render(view) =~ "edited far back"
+    end
+
+    test "the view holds no message content, however much has loaded", %{view: view} do
+      render_click(view, "load_more_messages", %{})
+      assert render(view) =~ "message 42"
+
+      # This is what the stream is for: before it, every loaded message sat
+      # in the process's assigns for the life of the view.
+      assigns = :sys.get_state(view.pid).socket.assigns
+
+      refute Map.has_key?(assigns, :messages)
+      assert length(assigns.rendered_messages) == 60
+      refute inspect(assigns, limit: :infinity, printable_limit: :infinity) =~ "message 42"
+    end
+  end
+
+  describe "grouping and redrawing in the feed" do
+    setup %{conn: conn} do
+      ctx = signed_in_with_server(conn)
+      first = message_fixture(ctx.channel, ctx.user, %{content: "first of the run"})
+      second = message_fixture(ctx.channel, ctx.user, %{content: "second of the run"})
+      {:ok, view, _html} = live(ctx.conn, ~p"/chat/#{ctx.server.id}/#{ctx.channel.id}")
+
+      Map.merge(ctx, %{view: view, first: first, second: second})
+    end
+
+    test "consecutive messages from one author share a header", %{
+      view: view,
+      first: first,
+      second: second
+    } do
+      assert has_element?(view, "#message-#{first.id}[data-layout=full]")
+      assert has_element?(view, "#message-#{second.id}[data-layout=compact]")
+    end
+
+    test "a live message joins the run, and someone else's starts a new one", %{
+      view: view,
+      server: server,
+      channel: channel,
+      user: user
+    } do
+      # Joined before the first send: GuildServer caches its member list when
+      # it starts, and the send below starts it.
+      other = user_fixture()
+      member_fixture(other, server)
+
+      {:ok, mine} = Banter.GuildServer.send_message(server.id, channel.id, user.id, "third")
+      assert has_element?(view, "#message-#{mine.id}[data-layout=compact]")
+
+      {:ok, theirs} = Banter.GuildServer.send_message(server.id, channel.id, other.id, "hi")
+      assert has_element?(view, "#message-#{theirs.id}[data-layout=full]")
+    end
+
+    test "deleting the head of a run gives the next message the header", %{
+      view: view,
+      server: server,
+      user: user,
+      first: first,
+      second: second
+    } do
+      :ok = Banter.GuildServer.delete_message(server.id, first.id, user)
+
+      refute has_element?(view, "#message-#{first.id}")
+      assert has_element?(view, "#message-#{second.id}[data-layout=full]")
+    end
+
+    test "opening another message's menu closes the first", %{
+      view: view,
+      first: first,
+      second: second
+    } do
+      render_click(view, "select_message", %{"id" => first.id})
+      assert has_element?(view, "#msg-menu-#{first.id}")
+
+      render_click(view, "select_message", %{"id" => second.id})
+      refute has_element?(view, "#msg-menu-#{first.id}")
+      assert has_element?(view, "#msg-menu-#{second.id}")
+    end
+
+    test "cancelling an edit closes the form", %{view: view, first: first} do
+      render_click(view, "start_edit", %{"id" => first.id})
+      assert has_element?(view, "#message-#{first.id} form[phx-submit=save_edit]")
+
+      render_click(view, "cancel_edit", %{})
+      refute has_element?(view, "#message-#{first.id} form[phx-submit=save_edit]")
+    end
+
+    test "cancelling a delete confirmation hides it again", %{view: view, first: first} do
+      render_click(view, "confirm_delete", %{"id" => first.id})
+      assert has_element?(view, "#message-#{first.id} button[phx-click=delete_message]")
+
+      render_click(view, "cancel_delete", %{})
+      refute has_element?(view, "#message-#{first.id} button[phx-click=delete_message]")
+    end
+
+    test "a saved edit redraws the message without the form", %{
+      view: view,
+      first: first
+    } do
+      render_click(view, "start_edit", %{"id" => first.id})
+
+      render_submit(view, "save_edit", %{"message_id" => first.id, "content" => "reworded"})
+
+      html = view |> element("#message-#{first.id}") |> render()
+      assert html =~ "reworded"
+      refute html =~ "save_edit"
+    end
+
+    test "an empty channel shows its welcome, and it's still there once messages arrive", %{
+      conn: conn,
+      server: server,
+      user: user
+    } do
+      quiet = channel_fixture(server, user, %{name: "quiet"})
+      {:ok, view, _} = live(conn, ~p"/chat/#{server.id}/#{quiet.id}")
+
+      # Always rendered; CSS shows it only while it's the feed's sole child.
+      assert has_element?(view, "#messages-empty", "Welcome to #quiet!")
+
+      {:ok, _} =
+        Banter.GuildServer.send_message(server.id, quiet.id, user.id, "breaking the silence")
+
+      assert has_element?(view, "#messages-empty")
+      assert render(view) =~ "breaking the silence"
     end
   end
 
@@ -890,16 +1053,28 @@ defmodule BanterWeb.ChatLiveTest do
       assert render(view)
     end
 
-    test "the edit buffer updates as you type", %{view: view, user: user, channel: channel} do
+    test "an edit draft survives the message being redrawn", %{
+      view: view,
+      user: user,
+      channel: channel
+    } do
       # Sent through the view so the message is on screen — the edit form
       # renders inside it.
       view |> element("form[phx-submit='send_message']") |> render_submit(%{content: "before"})
       {:ok, [message]} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: user)
 
       render_click(view, "start_edit", %{"id" => message.id})
-      html = render_click(view, "update_edit", %{"content" => "mid-edit text"})
+      render_click(view, "update_edit", %{"content" => "mid-edit text"})
+
+      # Typing doesn't redraw the message (the browser already shows the
+      # text), so force a redraw another way: the author changing avatar
+      # redraws everything they wrote. The form must come back with the
+      # draft, not the original text.
+      render_hook(view, "select_avatar", %{"url" => "/images/avatars/avatar-3.png"})
+      html = view |> element("#message-#{message.id}") |> render()
 
       assert html =~ "mid-edit text"
+      assert html =~ "avatar-3.png"
     end
 
     test "start_edit opens the form on a message loaded with the channel", %{

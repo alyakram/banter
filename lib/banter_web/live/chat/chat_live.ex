@@ -20,7 +20,7 @@ defmodule BanterWeb.ChatLive do
 
   alias Banter.{Chat, GuildServer, Voice}
   alias BanterWeb.Presence
-  alias BanterWeb.ChatLive.Components
+  alias BanterWeb.ChatLive.{Components, Feed}
   @impl true
   def mount(_params, _session, socket) do
     # Subscribe to presence updates and track user as online
@@ -51,7 +51,7 @@ defmodule BanterWeb.ChatLive do
       |> assign(:current_server, nil)
       |> assign(:channels, [])
       |> assign(:current_channel, nil)
-      |> assign(:messages, [])
+      |> Feed.init()
       |> assign(:members, [])
       |> assign(:message_input, "")
       |> assign(:show_create_server_modal, false)
@@ -429,12 +429,11 @@ defmodule BanterWeb.ChatLive do
       msgs = Enum.take(msgs, 50)
       new_cursor = if msgs != [], do: List.last(msgs).id, else: nil
 
-      older_messages =
-        Ash.load!(Enum.reverse(msgs), [:author, :attachments, reply_to: [:author]], actor: actor)
+      older_messages = Ash.load!(Enum.reverse(msgs), Feed.loads(), actor: actor)
 
       socket =
         socket
-        |> update(:messages, fn messages -> older_messages ++ messages end)
+        |> Feed.prepend(older_messages)
         |> assign(:messages_cursor, new_cursor || socket.assigns.messages_cursor)
         |> assign(:has_more_messages, has_more)
         |> assign(:loading_more_messages, false)
@@ -522,13 +521,13 @@ defmodule BanterWeb.ChatLive do
   # ── Edit / Delete Events ────────────────────────────────────────────
 
   def handle_event("select_message", %{"id" => id}, socket) do
-    current = socket.assigns.selected_message_id
-    new_id = if current == id, do: nil, else: id
-    {:noreply, socket |> assign(:selected_message_id, new_id) |> assign(:confirming_delete_id, nil)}
+    new_id = if socket.assigns.selected_message_id == id, do: nil, else: id
+
+    {:noreply, put_message_ui(socket, selected_message_id: new_id, confirming_delete_id: nil)}
   end
 
   def handle_event("deselect_message", _, socket) do
-    {:noreply, assign(socket, :selected_message_id, nil)}
+    {:noreply, put_message_ui(socket, selected_message_id: nil)}
   end
 
   def handle_event("start_edit", %{"id" => msg_id}, socket) do
@@ -538,9 +537,9 @@ defmodule BanterWeb.ChatLive do
       {:ok, %{author_id: ^user_id} = message} ->
         {:noreply,
          socket
-         |> assign(:editing_message_id, msg_id)
+         # Before the redraw, so the form opens holding the current text.
          |> assign(:editing_content, message.content || "")
-         |> assign(:selected_message_id, nil)}
+         |> put_message_ui(editing_message_id: msg_id, selected_message_id: nil)}
 
       _ ->
         {:noreply, socket}
@@ -548,6 +547,9 @@ defmodule BanterWeb.ChatLive do
   end
 
   def handle_event("update_edit", params, socket) do
+    # No redraw: the browser already shows what's being typed. Kept so a
+    # redraw for some other reason (an avatar change, say) doesn't reset the
+    # draft to the original text.
     {:noreply, assign(socket, :editing_content, params["content"] || "")}
   end
 
@@ -564,6 +566,8 @@ defmodule BanterWeb.ChatLive do
              socket.assigns.current_user
            ) do
         {:ok, _} ->
+          # Only the assigns: the {:message_update, _} broadcast redraws the
+          # message, and by then editing_message_id is already cleared.
           {:noreply, socket |> assign(:editing_message_id, nil) |> assign(:editing_content, "")}
 
         {:error, %Ash.Error.Forbidden{}} ->
@@ -576,15 +580,18 @@ defmodule BanterWeb.ChatLive do
   end
 
   def handle_event("cancel_edit", _, socket) do
-    {:noreply, socket |> assign(:editing_message_id, nil) |> assign(:editing_content, "")}
+    {:noreply,
+     socket
+     |> assign(:editing_content, "")
+     |> put_message_ui(editing_message_id: nil)}
   end
 
   def handle_event("confirm_delete", %{"id" => msg_id}, socket) do
-    {:noreply, socket |> assign(:confirming_delete_id, msg_id) |> assign(:selected_message_id, nil)}
+    {:noreply, put_message_ui(socket, confirming_delete_id: msg_id, selected_message_id: nil)}
   end
 
   def handle_event("cancel_delete", _, socket) do
-    {:noreply, assign(socket, :confirming_delete_id, nil)}
+    {:noreply, put_message_ui(socket, confirming_delete_id: nil)}
   end
 
   def handle_event("delete_message", %{"id" => msg_id}, socket) do
@@ -594,18 +601,19 @@ defmodule BanterWeb.ChatLive do
            socket.assigns.current_user
          ) do
       :ok ->
+        # The {:message_delete, _} broadcast removes it from the feed.
         {:noreply, assign(socket, :confirming_delete_id, nil)}
 
       {:error, %Ash.Error.Forbidden{}} ->
         {:noreply,
          socket
-         |> assign(:confirming_delete_id, nil)
+         |> put_message_ui(confirming_delete_id: nil)
          |> put_flash(:error, "Not authorized to delete this message")}
 
       {:error, _} ->
         {:noreply,
          socket
-         |> assign(:confirming_delete_id, nil)
+         |> put_message_ui(confirming_delete_id: nil)
          |> put_flash(:error, "Failed to delete message")}
     end
   end
@@ -618,8 +626,7 @@ defmodule BanterWeb.ChatLive do
         {:noreply,
          socket
          |> assign(:replying_to, message)
-         |> assign(:editing_message_id, nil)
-         |> assign(:selected_message_id, nil)}
+         |> put_message_ui(editing_message_id: nil, selected_message_id: nil)}
 
       :error ->
         {:noreply, socket}
@@ -766,14 +773,9 @@ defmodule BanterWeb.ChatLive do
     if socket.assigns.current_channel && message.channel_id == socket.assigns.current_channel.id do
       # Load author and attachments for display. Needs the actor: reply_to is
       # itself a Message, and message reads are membership-gated.
-      {:ok, message} =
-        Ash.load(message, [:author, :attachments, reply_to: [:author]],
-          actor: socket.assigns.current_user
-        )
+      {:ok, message} = Ash.load(message, Feed.loads(), actor: socket.assigns.current_user)
 
-      socket =
-        socket
-        |> update(:messages, fn messages -> messages ++ [message] end)
+      socket = Feed.append(socket, message)
 
       {:noreply, push_event(socket, "scroll_to_bottom", %{})}
     else
@@ -784,12 +786,9 @@ defmodule BanterWeb.ChatLive do
   @impl true
   def handle_info({:guild_event, {:message_update, message}}, socket) do
     if socket.assigns.current_channel && message.channel_id == socket.assigns.current_channel.id do
-      socket =
-        update(socket, :messages, fn msgs ->
-          Enum.map(msgs, &if(&1.id == message.id, do: message, else: &1))
-        end)
-
-      {:noreply, socket}
+      # Redraws it only if it's on screen — an edit to a message further back
+      # than the loaded page must not be appended to the bottom.
+      {:noreply, Feed.replace(socket, message)}
     else
       {:noreply, socket}
     end
@@ -797,10 +796,9 @@ defmodule BanterWeb.ChatLive do
 
   @impl true
   def handle_info({:guild_event, {:message_delete, message_id}}, socket) do
-    socket =
-      update(socket, :messages, fn msgs -> Enum.reject(msgs, &(&1.id == message_id)) end)
-
-    {:noreply, socket}
+    # Deletes arrive for every channel in the guild; Feed ignores ids it
+    # hasn't rendered.
+    {:noreply, Feed.delete(socket, message_id)}
   end
 
   @impl true
@@ -962,13 +960,9 @@ defmodule BanterWeb.ChatLive do
   def handle_info({:user_avatar_updated, user_id, url}, socket) do
     socket =
       socket
-      |> update(:messages, fn msgs ->
-        Enum.map(msgs, fn msg ->
-          msg
-          |> patch_author_avatar(user_id, url)
-          |> patch_reply_to_author_avatar(user_id, url)
-        end)
-      end)
+      # Re-read rather than patched in place: the feed holds no message
+      # structs, and the re-read already carries the new avatar.
+      |> Feed.rerender_user(user_id)
       |> update(:members, fn members ->
         Enum.map(members, fn member ->
           if member.user_id == user_id && member.user do
@@ -1057,6 +1051,18 @@ defmodule BanterWeb.ChatLive do
       _ ->
         :ok
     end
+  end
+
+  # Sets per-message UI state — which message is selected, being edited, or
+  # awaiting delete confirmation — and redraws the messages whose look it
+  # changes: each key's old message and its new one. The feed is a stream, so
+  # assigning alone would leave them drawn as they were.
+  defp put_message_ui(socket, changes) do
+    touched = for {key, new_id} <- changes, id <- [socket.assigns[key], new_id], do: id
+
+    socket
+    |> assign(changes)
+    |> Feed.rerender(touched)
   end
 
   # Looks the message up by id instead of in what the feed has rendered, so the
@@ -1151,12 +1157,11 @@ defmodule BanterWeb.ChatLive do
         msgs = Enum.take(msgs, 50)
         cursor = if msgs != [], do: List.last(msgs).id, else: nil
 
-        messages =
-          Ash.load!(Enum.reverse(msgs), [:author, :attachments, reply_to: [:author]], actor: actor)
+        messages = Ash.load!(Enum.reverse(msgs), Feed.loads(), actor: actor)
 
         socket
         |> assign(:current_channel, channel)
-        |> assign(:messages, messages)
+        |> Feed.reset(messages)
         |> assign(:messages_cursor, cursor)
         |> assign(:has_more_messages, has_more)
         |> assign(:loading_more_messages, false)
@@ -1165,28 +1170,12 @@ defmodule BanterWeb.ChatLive do
       {:error, _} ->
         socket
         |> assign(:current_channel, nil)
-        |> assign(:messages, [])
+        |> Feed.reset([])
         |> assign(:messages_cursor, nil)
         |> assign(:has_more_messages, false)
         |> assign(:loading_more_messages, false)
     end
   end
-
-  defp patch_author_avatar(%{author_id: uid, author: author} = msg, user_id, url)
-       when uid == user_id and not is_nil(author),
-       do: %{msg | author: %{author | avatar_url: url}}
-
-  defp patch_author_avatar(msg, _user_id, _url), do: msg
-
-  defp patch_reply_to_author_avatar(
-         %{reply_to: %{author_id: uid, author: author} = reply_to} = msg,
-         user_id,
-         url
-       )
-       when uid == user_id and not is_nil(author),
-       do: %{msg | reply_to: %{reply_to | author: %{author | avatar_url: url}}}
-
-  defp patch_reply_to_author_avatar(msg, _user_id, _url), do: msg
 
   defp subscribe_to_channel(socket, _channel_id) do
     server = socket.assigns.current_server
@@ -1235,7 +1224,7 @@ defmodule BanterWeb.ChatLive do
 
       <Components.chat_area
         current_channel={@current_channel}
-        messages={@messages}
+        messages={@streams.messages}
         message_input={@message_input}
         uploads={@uploads}
         can_moderate={!!(@current_server && @current_user && @current_server.owner_id == @current_user.id)}

@@ -109,8 +109,9 @@ defmodule Banter.Voice.Room do
 
   @impl true
   def handle_call({:join, user_id, lv_pid}, _from, state) do
-    # Clean up any stale Peer for this user (handles page refresh gracefully)
-    {is_reconnect, state} = maybe_stop_peer(state, user_id)
+    # Clean up any stale Peer for this user (handles page refresh gracefully).
+    # :replaced tells the LiveView that owned it not to treat this as a loss.
+    {is_reconnect, state} = maybe_stop_peer(state, user_id, {:shutdown, :replaced})
 
     {:ok, peer_pid} = Peer.start_link(
       user_id: user_id,
@@ -146,7 +147,7 @@ defmodule Banter.Voice.Room do
 
   @impl true
   def handle_call({:leave, user_id}, _from, state) do
-    {_is_reconnect, state} = maybe_stop_peer(state, user_id)
+    {_is_reconnect, state} = maybe_stop_peer(state, user_id, {:shutdown, :left})
 
     # Tell remaining peers to remove the sender for the departed user
     Enum.each(state.participants, fn {_, peer} ->
@@ -187,8 +188,13 @@ defmodule Banter.Voice.Room do
       {nil, _} ->
         {:noreply, state, @idle_timeout}
 
+      # A Peer that ended on its own — its connection failed or never came up,
+      # or it crashed. Deliberate stops are demonitored first (maybe_stop_peer),
+      # so they never reach here. The participant's LiveView monitors the Peer
+      # too and decides whether to reconnect or leave; this only drops it from
+      # the fan-out.
       {user_id, new_monitors} ->
-        Logger.warning("Voice.Peer for #{user_id} crashed (#{inspect(reason)}), removing")
+        Logger.warning("Voice.Peer for #{user_id} exited (#{inspect(reason)}), removing")
 
         remaining = Map.delete(state.participants, user_id)
 
@@ -228,8 +234,9 @@ defmodule Banter.Voice.Room do
     {:via, Registry, {Banter.VoiceRoomRegistry, channel_id}}
   end
 
-  # Stops the existing Peer for user_id if present. Returns {was_reconnect, new_state}.
-  defp maybe_stop_peer(state, user_id) do
+  # Stops the existing Peer for user_id if present, with `reason` as its exit
+  # reason. Returns {was_reconnect, new_state}.
+  defp maybe_stop_peer(state, user_id, reason) do
     case Map.get(state.participants, user_id) do
       nil ->
         {false, state}
@@ -245,7 +252,7 @@ defmodule Banter.Voice.Room do
         if old_ref, do: Process.demonitor(old_ref, [:flush])
         if Process.alive?(old_pid) do
           try do
-            GenServer.stop(old_pid, :shutdown)
+            GenServer.stop(old_pid, reason)
           catch
             :exit, _ -> :ok
           end

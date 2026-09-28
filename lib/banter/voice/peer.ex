@@ -10,6 +10,22 @@ defmodule Banter.Voice.Peer do
   - Browser offer → `process_offer/2` → sends answer to LiveView
   - Server-initiated renegotiation → `:negotiation_needed` → sends offer to LiveView
   - LiveView relays all signals via push_event/handle_event
+
+  ## How a Peer ends
+
+  The exit reason says why, so whoever monitors it (the Room, and the
+  participant's LiveView) can tell a deliberate stop from a lost connection:
+
+  - `{:shutdown, :left}` / `{:shutdown, :replaced}` — stopped by the Room: the
+    user left, or rejoined from another tab or a page refresh.
+  - `{:shutdown, :connection_lost}` — it was connected, then failed.
+  - `{:shutdown, :connect_failed}` / `{:shutdown, :connect_timeout}` — it never
+    connected: ICE failed outright, or nothing came of the browser's offer
+    within the connect timeout.
+  - `{:shutdown, :peer_connection_down}` — the underlying PeerConnection died.
+
+  It sends `{:voice_connection, :connected}` to the LiveView each time the
+  connection comes up.
   """
 
   use GenServer
@@ -18,6 +34,11 @@ defmodule Banter.Voice.Peer do
   alias ExWebRTC.{PeerConnection, MediaStreamTrack, SessionDescription, ICECandidate}
 
   @default_ice_servers [%{urls: "stun:stun.l.google.com:19302"}]
+
+  # How long after the browser's offer the connection has to come up. Counted
+  # from the offer rather than from start, so time the user spends on the
+  # browser's microphone prompt doesn't count against it.
+  @connect_timeout :timer.seconds(20)
 
   # ── Client API ─────────────────────────────────────────────────────
 
@@ -72,6 +93,7 @@ defmodule Banter.Voice.Peer do
     room_pid = Keyword.fetch!(opts, :room_pid)
     lv_pid = Keyword.fetch!(opts, :lv_pid)
     ice_servers = Keyword.get(opts, :ice_servers, @default_ice_servers)
+    connect_timeout = Keyword.get(opts, :connect_timeout, @connect_timeout)
 
     Logger.info("Voice.Peer starting for user=#{user_id}")
 
@@ -86,7 +108,10 @@ defmodule Banter.Voice.Peer do
       senders: %{},            # %{user_id => track_id}
       negotiating: false,      # true while server-initiated offer is in-flight
       ready: false,            # true after initial browser offer processed
-      pending_negotiate: false # true if add_sender fired before ready
+      pending_negotiate: false, # true if add_sender fired before ready
+      connected: false,        # true once the connection has come up
+      connect_timeout: connect_timeout,
+      connect_timer: nil
     }}
   end
 
@@ -98,7 +123,7 @@ defmodule Banter.Voice.Peer do
          {:ok, answer} <- PeerConnection.create_answer(state.pc),
          :ok <- PeerConnection.set_local_description(state.pc, answer) do
       send(state.lv_pid, {:voice_signal, :answer, %{type: Atom.to_string(answer.type), sdp: answer.sdp}})
-      new_state = %{state | ready: true, pending_negotiate: false}
+      new_state = %{state | ready: true, pending_negotiate: false} |> start_connect_timer()
       # If add_sender fired before we were ready, kick off the deferred renegotiation now
       if state.pending_negotiate, do: send(self(), :do_renegotiate)
       {:reply, :ok, new_state}
@@ -229,8 +254,16 @@ defmodule Banter.Voice.Peer do
   end
 
   def handle_info({:ex_webrtc, pc, {:connection_state_change, :failed}}, state) when pc == state.pc do
-    Logger.warning("Voice.Peer #{state.user_id}: connection failed, self-terminating")
-    {:stop, :shutdown, state}
+    reason = if state.connected, do: :connection_lost, else: :connect_failed
+    Logger.warning("Voice.Peer #{state.user_id}: connection failed (#{reason}), self-terminating")
+    {:stop, {:shutdown, reason}, state}
+  end
+
+  def handle_info({:ex_webrtc, pc, {:connection_state_change, :connected}}, state) when pc == state.pc do
+    Logger.info("Voice.Peer #{state.user_id}: connection → connected")
+    if state.connect_timer, do: Process.cancel_timer(state.connect_timer)
+    send(state.lv_pid, {:voice_connection, :connected})
+    {:noreply, %{state | connected: true, connect_timer: nil}}
   end
 
   def handle_info({:ex_webrtc, pc, {:connection_state_change, conn_state}}, state) when pc == state.pc do
@@ -238,11 +271,33 @@ defmodule Banter.Voice.Peer do
     {:noreply, state}
   end
 
+  def handle_info(:connect_timeout, %{connected: false} = state) do
+    Logger.warning("Voice.Peer #{state.user_id}: no connection #{state.connect_timeout}ms after the offer")
+    {:stop, {:shutdown, :connect_timeout}, state}
+  end
+
+  def handle_info(:connect_timeout, state), do: {:noreply, state}
+
+  # init traps exits, so the PeerConnection dying arrives as a message. It used
+  # to fall through to the catch-all below, leaving this Peer alive with no
+  # connection — a participant nobody could hear, whom nothing would remove.
+  def handle_info({:EXIT, pc, reason}, state) when pc == state.pc do
+    Logger.warning("Voice.Peer #{state.user_id}: PeerConnection exited (#{inspect(reason)})")
+    {:stop, {:shutdown, :peer_connection_down}, state}
+  end
+
   def handle_info(_msg, state) do
     {:noreply, state}
   end
 
   # ── Private ─────────────────────────────────────────────────────────
+
+  # Once, from the first offer. A renegotiation doesn't restart the clock.
+  defp start_connect_timer(%{connect_timer: nil, connected: false} = state) do
+    %{state | connect_timer: Process.send_after(self(), :connect_timeout, state.connect_timeout)}
+  end
+
+  defp start_connect_timer(state), do: state
 
   defp do_renegotiate(state) do
     case PeerConnection.create_offer(state.pc) do

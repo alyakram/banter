@@ -247,6 +247,20 @@ defmodule Banter.Chat.Message do
       prepare build(sort: [id: :desc], limit: 51)
     end
 
+    # by_channel's counterpart for paging downward, after the feed has dropped
+    # its newest messages to stay bounded: the messages after `after_id`,
+    # oldest first. 51 rows for a page of 50, like by_channel — the extra one
+    # says there's more. The [:channel_id, :id] index serves this direction
+    # too.
+    read :newer_in_channel do
+      argument :channel_id, :uuid, allow_nil?: false
+      argument :after_id, :uuid, allow_nil?: false
+
+      filter expr(channel_id == ^arg(:channel_id) and id > ^arg(:after_id))
+
+      prepare build(sort: [id: :asc], limit: 51)
+    end
+
     read :pinned_in_channel do
       argument :channel_id, :uuid, allow_nil?: false
       filter expr(channel_id == ^arg(:channel_id) and pinned == true)

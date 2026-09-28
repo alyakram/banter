@@ -41,6 +41,7 @@ defmodule Banter.Chat do
       define :send_message, action: :create
       define :list_messages, action: :read
       define :list_channel_messages, action: :by_channel
+      define :list_newer_channel_messages, action: :newer_in_channel
       define :get_message, args: [:id], action: :by_id
       define :list_messages_by_ids, args: [:ids], action: :by_ids
       define :edit_message, action: :update

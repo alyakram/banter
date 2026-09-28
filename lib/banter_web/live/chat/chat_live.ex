@@ -532,16 +532,18 @@ defmodule BanterWeb.ChatLive do
   end
 
   def handle_event("start_edit", %{"id" => msg_id}, socket) do
-    message = Enum.find(socket.assigns.messages, &(&1.id == msg_id))
+    user_id = socket.assigns.current_user.id
 
-    if message && message.author_id == socket.assigns.current_user.id do
-      {:noreply,
-       socket
-       |> assign(:editing_message_id, msg_id)
-       |> assign(:editing_content, message.content || "")
-       |> assign(:selected_message_id, nil)}
-    else
-      {:noreply, socket}
+    case fetch_channel_message(socket, msg_id) do
+      {:ok, %{author_id: ^user_id} = message} ->
+        {:noreply,
+         socket
+         |> assign(:editing_message_id, msg_id)
+         |> assign(:editing_content, message.content || "")
+         |> assign(:selected_message_id, nil)}
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -611,16 +613,16 @@ defmodule BanterWeb.ChatLive do
   # ── Reply Events ────────────────────────────────────────────────────
 
   def handle_event("start_reply", %{"id" => msg_id}, socket) do
-    message = Enum.find(socket.assigns.messages, &(&1.id == msg_id))
+    case fetch_channel_message(socket, msg_id) do
+      {:ok, message} ->
+        {:noreply,
+         socket
+         |> assign(:replying_to, message)
+         |> assign(:editing_message_id, nil)
+         |> assign(:selected_message_id, nil)}
 
-    if message do
-      {:noreply,
-       socket
-       |> assign(:replying_to, message)
-       |> assign(:editing_message_id, nil)
-       |> assign(:selected_message_id, nil)}
-    else
-      {:noreply, socket}
+      :error ->
+        {:noreply, socket}
     end
   end
 
@@ -1054,6 +1056,22 @@ defmodule BanterWeb.ChatLive do
 
       _ ->
         :ok
+    end
+  end
+
+  # Looks the message up by id instead of in what the feed has rendered, so the
+  # view needn't hold messages in memory to act on one. The read is
+  # membership-gated by the actor; the channel match keeps a crafted event
+  # from replying to or editing a message in another channel of the server.
+  defp fetch_channel_message(socket, message_id) do
+    %{current_user: user, current_channel: channel} = socket.assigns
+
+    with %{id: channel_id} <- channel,
+         {:ok, %{channel_id: ^channel_id} = message} <-
+           Chat.get_message(message_id, actor: user, load: [:author]) do
+      {:ok, message}
+    else
+      _ -> :error
     end
   end
 

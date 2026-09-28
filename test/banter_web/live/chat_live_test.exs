@@ -708,6 +708,36 @@ defmodule BanterWeb.ChatLiveTest do
       assert reply.message_type == :reply
     end
 
+    test "a message from another channel can't be replied to", %{
+      view: view,
+      user: user,
+      server: server,
+      channel: channel
+    } do
+      # The reply target is looked up by id, so the id alone must not be
+      # enough: a crafted event naming a message elsewhere in the server is
+      # ignored rather than threading a reply across channels.
+      elsewhere = channel_fixture(server, user, %{name: "elsewhere"})
+      foreign = message_fixture(elsewhere, user, %{content: "over there"})
+
+      html = render_click(view, "start_reply", %{"id" => foreign.id})
+      refute html =~ "Replying to"
+
+      view
+      |> element("form[phx-submit='send_message']")
+      |> render_submit(%{content: "not threaded"})
+
+      {:ok, messages} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: user)
+      assert Enum.find(messages, &(&1.content == "not threaded")).reply_to_id == nil
+    end
+
+    test "an unknown message id is ignored", %{view: view} do
+      html = render_click(view, "start_reply", %{"id" => Ash.UUID.generate()})
+
+      refute html =~ "Replying to"
+      assert Process.alive?(view.pid)
+    end
+
     test "cancelling a reply clears it, so the next message is a normal one", %{
       view: view,
       user: user,
@@ -861,8 +891,8 @@ defmodule BanterWeb.ChatLiveTest do
     end
 
     test "the edit buffer updates as you type", %{view: view, user: user, channel: channel} do
-      # Sent through the view so it's in the messages assign — start_edit
-      # resolves the message from there, not from the database.
+      # Sent through the view so the message is on screen — the edit form
+      # renders inside it.
       view |> element("form[phx-submit='send_message']") |> render_submit(%{content: "before"})
       {:ok, [message]} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: user)
 
@@ -870,6 +900,20 @@ defmodule BanterWeb.ChatLiveTest do
       html = render_click(view, "update_edit", %{"content" => "mid-edit text"})
 
       assert html =~ "mid-edit text"
+    end
+
+    test "start_edit opens the form on a message loaded with the channel", %{
+      conn: conn,
+      user: user,
+      server: server,
+      channel: channel
+    } do
+      message = message_fixture(channel, user, %{content: "from history"})
+      {:ok, view, _} = live(conn, ~p"/chat/#{server.id}/#{channel.id}")
+
+      html = render_click(view, "start_edit", %{"id" => message.id})
+
+      assert html =~ ~s(phx-submit="save_edit")
     end
 
     test "validate_message keeps the view alive during an upload change", %{view: view} do

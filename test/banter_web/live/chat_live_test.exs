@@ -155,9 +155,7 @@ defmodule BanterWeb.ChatLiveTest do
         |> element("form[phx-submit='create_server']")
         |> render_submit(%{name: "x"})
 
-      # The flash lives in the app layout, which isn't part of the LiveView's
-      # own render, so assert the effect that matters: nothing was created.
-      assert is_binary(html)
+      assert html =~ "Failed to create server"
       assert {:ok, []} = Ash.read(Chat.Server, actor: user)
     end
 
@@ -235,7 +233,7 @@ defmodule BanterWeb.ChatLiveTest do
         |> element("form[phx-submit='join_server_by_invite']")
         |> render_submit(%{invite_code: "NOSUCH"})
 
-      assert is_binary(html)
+      assert html =~ "Invalid invite code or already a member"
       assert {:ok, []} = Chat.list_user_memberships(%{user_id: joiner.id}, actor: joiner)
     end
   end
@@ -1591,10 +1589,10 @@ defmodule BanterWeb.ChatLiveTest do
       assert {:ok, []} = Chat.list_message_attachments(message.id, actor: user)
 
       # And the rejected file is cleared from the composer rather than sitting
-      # there being silently dropped from every later send. (The accompanying
-      # flash lives in the layout, which isn't part of the LiveView's own
-      # render, so it can't be asserted here.)
-      refute render(view) =~ "innocent.png"
+      # there being silently dropped from every later send — with a flash
+      # saying why.
+      refute has_element?(view, "[data-upload-entry]")
+      assert render(view) =~ "Couldn&#39;t attach innocent.png"
     end
 
     test "a rejected file on its own doesn't post an empty message", %{
@@ -1614,7 +1612,8 @@ defmodule BanterWeb.ChatLiveTest do
       # written — attempting it would fail the "content or attachments"
       # validation and bury the real reason under a generic error.
       assert {:ok, []} = Chat.list_channel_messages(%{channel_id: channel.id}, actor: user)
-      refute render(view) =~ "bad.png"
+      refute has_element?(view, "[data-upload-entry]")
+      assert render(view) =~ "Couldn&#39;t attach bad.png"
     end
 
     test "an upload can be cancelled before sending", %{

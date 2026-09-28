@@ -1304,7 +1304,7 @@ defmodule BanterWeb.ChatLive.Components do
 
   def attachment_preview(assigns) do
     ~H"""
-    <div class="relative bg-base-100 rounded-lg overflow-hidden group">
+    <div data-upload-entry={@entry.ref} class="relative bg-base-100 rounded-lg overflow-hidden group">
       <%= if String.starts_with?(@entry.client_type, "image/") do %>
         <.live_img_preview entry={@entry} class="w-full h-24 object-cover" />
       <% else %>

@@ -73,11 +73,15 @@ defmodule BanterWeb.Layouts do
   end
 
 
+  # Full-screen chat UI, used by ChatLive. It renders the flash group like the
+  # app layout does; without it, every put_flash in ChatLive went nowhere.
   def chat(assigns) do
     ~H"""
     <main>
       {@inner_content}
     </main>
+
+    <.flash_group flash={@flash} />
     """
   end
 

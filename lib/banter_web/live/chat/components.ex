@@ -335,7 +335,10 @@ defmodule BanterWeb.ChatLive.Components do
 
   def voice_channel_user(assigns) do
     ~H"""
-    <div class="flex items-center gap-2 px-2 py-1 rounded hover:bg-base-100 transition-colors">
+    <div
+      data-voice-user={@voice_state.user_id}
+      class="flex items-center gap-2 px-2 py-1 rounded hover:bg-base-100 transition-colors"
+    >
       <div class="w-6 h-6 rounded-full overflow-hidden flex-shrink-0">
         <.user_avatar user={@voice_state.user} size="w-6 h-6" />
       </div>

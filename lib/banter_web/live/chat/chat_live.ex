@@ -82,6 +82,9 @@ defmodule BanterWeb.ChatLive do
       |> assign(:voice_muted, false)
       |> assign(:voice_deafened, false)
       |> assign(:voice_peer_pid, nil)
+      # Monitor on voice_peer_pid. Its :DOWN is how this view learns the
+      # connection is gone; deliberate stops drop the monitor first.
+      |> assign(:voice_peer_ref, nil)
       |> assign(:show_mobile_sidebar, false)
       |> assign(:editing_message_id, nil)
       |> assign(:editing_content, "")
@@ -689,7 +692,7 @@ defmodule BanterWeb.ChatLive do
     else
       if server do
         # Leave current voice channel first if in one
-        maybe_leave_current_voice(socket)
+        socket = maybe_leave_current_voice(socket)
 
         case Chat.join_voice_channel(
                %{
@@ -720,8 +723,22 @@ defmodule BanterWeb.ChatLive do
   end
 
   def handle_event("leave_voice_channel", _, socket) do
-    maybe_leave_current_voice(socket)
-    {:noreply, socket}
+    {:noreply, maybe_leave_current_voice(socket)}
+  end
+
+  # From the VoiceChannel hook, when the browser couldn't start voice at all —
+  # a denied or missing microphone, most often. Nothing reached the Peer, so
+  # there's no connection to lose or retry; take the user out and say why.
+  def handle_event("voice_failed", %{"reason" => reason}, socket) do
+    if socket.assigns.current_voice_channel do
+      {:noreply,
+       socket
+       |> maybe_leave_current_voice()
+       |> clear_local_voice()
+       |> put_flash(:error, voice_start_failure(reason))}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_event("toggle_voice_mute", _, socket) do
@@ -911,11 +928,7 @@ defmodule BanterWeb.ChatLive do
           end)
           |> then(fn s ->
             if vs.user_id == current_user_id do
-              s
-              |> assign(:current_voice_channel, nil)
-              |> assign(:voice_muted, false)
-              |> assign(:voice_deafened, false)
-              |> assign(:voice_peer_pid, nil)
+              clear_local_voice(s)
             else
               s
             end
@@ -993,6 +1006,32 @@ defmodule BanterWeb.ChatLive do
   @impl true
   def handle_info({:voice_signal, :ice_candidate, candidate}, socket) do
     {:noreply, push_event(socket, "voice_ice_candidate", candidate)}
+  end
+
+  # This view's Peer ended without the view asking it to.
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{assigns: %{voice_peer_ref: ref}} = socket) do
+    socket = assign(socket, :voice_peer_ref, nil)
+
+    case reason do
+      # Another tab of this user (or this page, refreshed) took over voice. The
+      # voice state is theirs now, so leave it be.
+      {:shutdown, :replaced} ->
+        {:noreply, socket |> clear_local_voice() |> put_flash(:info, "Voice moved to another tab.")}
+
+      # Another tab of this user left voice; its :leave broadcast follows.
+      {:shutdown, :left} ->
+        {:noreply, clear_local_voice(socket)}
+
+      # Lost, never came up, or crashed. Without this the user stayed listed as
+      # in voice, with no audio, until they closed the tab.
+      _ ->
+        {:noreply,
+         socket
+         |> maybe_leave_current_voice()
+         |> clear_local_voice()
+         |> put_flash(:error, voice_connection_failure(reason))}
+    end
   end
 
   @impl true
@@ -1083,8 +1122,12 @@ defmodule BanterWeb.ChatLive do
 
   # ── Private ─────────────────────────────────────────────────────────
 
+  # Leaves on purpose: deletes the voice state, stops the Peer, and tells the
+  # guild. Drops the Peer monitor first so its stop isn't mistaken for a lost
+  # connection.
   defp maybe_leave_current_voice(socket) do
     user = socket.assigns.current_user
+    socket = drop_voice_monitor(socket)
 
     case Chat.get_user_voice_state(user.id, actor: user) do
       {:ok, voice_state} when not is_nil(voice_state) ->
@@ -1100,10 +1143,42 @@ defmodule BanterWeb.ChatLive do
           {:guild_event, {:voice_state_update, %{action: :leave, voice_state: voice_state_with_user}}}
         )
 
+        socket
+
       _ ->
-        :ok
+        socket
     end
   end
+
+  # This view is no longer in voice. Touches nothing but its own assigns — the
+  # voice state row, if any, is someone else's business by now.
+  defp clear_local_voice(socket) do
+    socket
+    |> drop_voice_monitor()
+    |> assign(:current_voice_channel, nil)
+    |> assign(:voice_muted, false)
+    |> assign(:voice_deafened, false)
+    |> assign(:voice_peer_pid, nil)
+  end
+
+  defp drop_voice_monitor(%{assigns: %{voice_peer_ref: nil}} = socket), do: socket
+
+  defp drop_voice_monitor(socket) do
+    Process.demonitor(socket.assigns.voice_peer_ref, [:flush])
+    assign(socket, :voice_peer_ref, nil)
+  end
+
+  defp voice_start_failure("NotAllowedError"),
+    do: "Microphone access was denied. Allow it for this site and join again."
+
+  defp voice_start_failure("NotFoundError"), do: "No microphone was found."
+  defp voice_start_failure(_reason), do: "Couldn't start voice in this browser."
+
+  defp voice_connection_failure({:shutdown, reason})
+       when reason in [:connect_failed, :connect_timeout],
+       do: "Couldn't connect to voice."
+
+  defp voice_connection_failure(_reason), do: "Voice connection lost."
 
   # Sets per-message UI state — which message is selected, being edited, or
   # awaiting delete confirmation — and redraws the messages whose look it
@@ -1159,11 +1234,15 @@ defmodule BanterWeb.ChatLive do
   defp setup_voice_peer(socket, channel_id) do
     if connected?(socket) do
       user_id = socket.assigns.current_user.id
+      # Whatever Peer this view had is finished with; stop watching it, so the
+      # view only ever monitors the Peer it's using.
+      socket = drop_voice_monitor(socket)
 
       case Voice.Room.join(channel_id, user_id, self()) do
         {:ok, peer_pid} ->
           socket
           |> assign(:voice_peer_pid, peer_pid)
+          |> assign(:voice_peer_ref, Process.monitor(peer_pid))
           |> push_event("voice_mute_changed", %{muted: socket.assigns.voice_muted})
           |> push_event("voice_deafen_changed", %{deafened: socket.assigns.voice_deafened})
 

@@ -33,6 +33,10 @@ Hooks.VoiceChannel = {
       await this.setupWebRTC();
     } catch (err) {
       console.error("[VoiceChannel] setup failed:", err);
+      // Nothing reached the server, so it can't find out any other way. The
+      // error name (NotAllowedError for a denied mic, NotFoundError for none)
+      // picks the message the user sees.
+      this.pushEvent("voice_failed", { reason: err?.name || "Error" });
     }
   },
 

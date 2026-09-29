@@ -568,6 +568,140 @@ defmodule BanterWeb.ChatLiveTest do
       assert {:ok, []} = Chat.list_voice_states_by_channel(voice.id, actor: user)
     end
 
+    # Joins through the UI and returns the Peer the view ended up with — the
+    # :join broadcast is what sets it up.
+    defp join_voice(view, voice) do
+      render_hook(view, "join_voice_channel", %{"id" => voice.id})
+      render(view)
+      peer = :sys.get_state(view.pid).socket.assigns.voice_peer_pid
+      assert is_pid(peer)
+      peer
+    end
+
+    defp peer_of(view), do: :sys.get_state(view.pid).socket.assigns.voice_peer_pid
+
+    test "a lost connection takes the user out of voice, and everyone sees it", %{
+      view: view,
+      voice: voice,
+      user: user,
+      server: server,
+      channel: channel
+    } do
+      peer = join_voice(view, voice)
+
+      # Another member, watching the voice channel's list.
+      other = user_fixture()
+      member_fixture(other, server)
+
+      {:ok, others_view, _} =
+        live(log_in_user(build_conn(), other), ~p"/chat/#{server.id}/#{channel.id}")
+
+      assert has_element?(others_view, ~s([data-voice-user="#{user.id}"]))
+
+      GenServer.stop(peer, {:shutdown, :connection_lost})
+
+      assert has_element?(view, "#flash-error", "Voice connection lost.")
+      refute render(view) =~ "Voice Connected"
+      assert {:ok, []} = Chat.list_voice_states_by_channel(voice.id, actor: user)
+
+      # The ghost this fixes: they used to stay listed, with no audio, until
+      # they closed the tab.
+      refute has_element?(others_view, ~s([data-voice-user="#{user.id}"]))
+
+      # And signaling no longer goes to a dead pid (#23).
+      assert peer_of(view) == nil
+    end
+
+    test "a connection that never came up says so", %{view: view, voice: voice, user: user} do
+      peer = join_voice(view, voice)
+
+      GenServer.stop(peer, {:shutdown, :connect_timeout})
+
+      assert has_element?(view, "#flash-error", "Couldn't connect to voice.")
+      assert {:ok, []} = Chat.list_voice_states_by_channel(voice.id, actor: user)
+    end
+
+    test "a crashed Peer is treated as a lost connection", %{view: view, voice: voice, user: user} do
+      peer = join_voice(view, voice)
+      ref = Process.monitor(peer)
+
+      # Unlike GenServer.stop, this returns before the Peer is gone.
+      Process.exit(peer, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^peer, :killed}
+
+      assert has_element?(view, "#flash-error", "Voice connection lost.")
+      assert {:ok, []} = Chat.list_voice_states_by_channel(voice.id, actor: user)
+    end
+
+    test "another tab taking over voice leaves the voice state alone", %{
+      conn: conn,
+      view: view,
+      voice: voice,
+      user: user,
+      server: server,
+      channel: channel
+    } do
+      _peer = join_voice(view, voice)
+
+      # A second tab restores voice on mount, which replaces this tab's Peer.
+      {:ok, other_tab, _} = live(conn, ~p"/chat/#{server.id}/#{channel.id}")
+
+      assert has_element?(view, "#flash-info", "Voice moved to another tab.")
+      refute render(view) =~ "Voice Connected"
+      assert render(other_tab) =~ "Voice Connected"
+      assert {:ok, [state]} = Chat.list_voice_states_by_channel(voice.id, actor: user)
+      assert state.user_id == user.id
+    end
+
+    test "leaving on purpose isn't reported as a loss", %{view: view, voice: voice} do
+      _peer = join_voice(view, voice)
+
+      render_hook(view, "leave_voice_channel", %{})
+
+      refute has_element?(view, "#flash-error")
+      refute render(view) =~ "Voice Connected"
+    end
+
+    test "switching voice channels isn't reported as a loss", %{
+      view: view,
+      voice: voice,
+      user: user,
+      server: server
+    } do
+      other_voice = channel_fixture(server, user, %{name: "other-voice", type: :voice})
+      first = join_voice(view, voice)
+
+      second = join_voice(view, other_voice)
+
+      refute has_element?(view, "#flash-error")
+      refute Process.alive?(first)
+      assert Process.alive?(second)
+      assert {:ok, [state]} = Chat.list_voice_states_by_channel(other_voice.id, actor: user)
+      assert state.user_id == user.id
+    end
+
+    test "a denied microphone takes the user out, and says why", %{
+      view: view,
+      voice: voice,
+      user: user
+    } do
+      _peer = join_voice(view, voice)
+
+      render_hook(view, "voice_failed", %{"reason" => "NotAllowedError"})
+
+      assert has_element?(view, "#flash-error", "Microphone access was denied.")
+      assert {:ok, []} = Chat.list_voice_states_by_channel(voice.id, actor: user)
+      refute render(view) =~ "Voice Connected"
+    end
+
+    test "a missing microphone gets its own message", %{view: view, voice: voice} do
+      _peer = join_voice(view, voice)
+
+      render_hook(view, "voice_failed", %{"reason" => "NotFoundError"})
+
+      assert has_element?(view, "#flash-error", "No microphone was found.")
+    end
+
     test "mute and deafen toggles are persisted", %{view: view, voice: voice, user: user} do
       view |> render_hook("join_voice_channel", %{"id" => voice.id})
 

@@ -580,14 +580,88 @@ defmodule BanterWeb.ChatLiveTest do
 
     defp peer_of(view), do: :sys.get_state(view.pid).socket.assigns.voice_peer_pid
 
-    test "a lost connection takes the user out of voice, and everyone sees it", %{
+    # The Peer's connection comes up: what ExWebRTC tells it, after which it
+    # tells the view.
+    defp connected!(view) do
+      peer = peer_of(view)
+      send(peer, {:ex_webrtc, :sys.get_state(peer).pc, {:connection_state_change, :connected}})
+      :sys.get_state(peer)
+      render(view)
+    end
+
+    # Runs a scheduled reconnect attempt now instead of waiting out the backoff.
+    # The real timer still fires later and is ignored as superseded.
+    defp reconnect_now(view, voice, attempt) do
+      send(view.pid, {:voice_reconnect, voice.id, attempt})
+      render(view)
+    end
+
+    defp status_of(view) do
+      [status] =
+        Regex.run(~r/data-voice-status="(\w+)"/, render(view), capture: :all_but_first)
+
+      status
+    end
+
+    test "the panel says connecting until the connection is up", %{view: view, voice: voice} do
+      _peer = join_voice(view, voice)
+      assert status_of(view) == "connecting"
+      assert render(view) =~ "Connecting…"
+
+      connected!(view)
+
+      assert status_of(view) == "connected"
+      assert render(view) =~ "Voice Connected"
+    end
+
+    test "a lost connection comes back on a new Peer, and the browser starts over", %{
+      view: view,
+      voice: voice,
+      user: user
+    } do
+      lost = join_voice(view, voice)
+      connected!(view)
+
+      GenServer.stop(lost, {:shutdown, :connection_lost})
+
+      # Still in voice while it reconnects — for everyone else too.
+      assert status_of(view) == "reconnecting"
+      refute has_element?(view, "#flash-error")
+      assert {:ok, [_]} = Chat.list_voice_states_by_channel(voice.id, actor: user)
+
+      reconnect_now(view, voice, 1)
+
+      replacement = peer_of(view)
+      assert is_pid(replacement) and replacement != lost
+      assert_push_event(view, "voice_restart", %{})
+      assert status_of(view) == "reconnecting"
+
+      connected!(view)
+      assert status_of(view) == "connected"
+    end
+
+    test "a crashed Peer is treated as a lost connection", %{view: view, voice: voice, user: user} do
+      peer = join_voice(view, voice)
+      connected!(view)
+      ref = Process.monitor(peer)
+
+      # Unlike GenServer.stop, this returns before the Peer is gone.
+      Process.exit(peer, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^peer, :killed}
+
+      assert status_of(view) == "reconnecting"
+      assert {:ok, [_]} = Chat.list_voice_states_by_channel(voice.id, actor: user)
+    end
+
+    test "when the attempts run out, the user is taken out of voice and everyone sees it", %{
       view: view,
       voice: voice,
       user: user,
       server: server,
       channel: channel
     } do
-      peer = join_voice(view, voice)
+      lost = join_voice(view, voice)
+      connected!(view)
 
       # Another member, watching the voice channel's list.
       other = user_fixture()
@@ -598,10 +672,17 @@ defmodule BanterWeb.ChatLiveTest do
 
       assert has_element?(others_view, ~s([data-voice-user="#{user.id}"]))
 
-      GenServer.stop(peer, {:shutdown, :connection_lost})
+      GenServer.stop(lost, {:shutdown, :connection_lost})
 
+      # Two attempts, and neither connection ever comes up.
+      for attempt <- 1..2 do
+        reconnect_now(view, voice, attempt)
+        GenServer.stop(peer_of(view), {:shutdown, :connect_timeout})
+      end
+
+      # The user lost a working connection, whatever the last attempt died of.
       assert has_element?(view, "#flash-error", "Voice connection lost.")
-      refute render(view) =~ "Voice Connected"
+      refute has_element?(view, "#voice-panel")
       assert {:ok, []} = Chat.list_voice_states_by_channel(voice.id, actor: user)
 
       # The ghost this fixes: they used to stay listed, with no audio, until
@@ -612,25 +693,72 @@ defmodule BanterWeb.ChatLiveTest do
       assert peer_of(view) == nil
     end
 
-    test "a connection that never came up says so", %{view: view, voice: voice, user: user} do
+    test "a connection that comes back earns a fresh set of attempts", %{
+      view: view,
+      voice: voice
+    } do
+      first = join_voice(view, voice)
+      connected!(view)
+
+      GenServer.stop(first, {:shutdown, :connection_lost})
+      reconnect_now(view, voice, 1)
+      connected!(view)
+
+      GenServer.stop(peer_of(view), {:shutdown, :connection_lost})
+
+      # Attempt 1 again, not attempt 2 of the old outage.
+      assert :sys.get_state(view.pid).socket.assigns.voice_reconnects == 1
+      assert status_of(view) == "reconnecting"
+    end
+
+    test "a connection that never came up isn't retried", %{
+      view: view,
+      voice: voice,
+      user: user
+    } do
       peer = join_voice(view, voice)
 
       GenServer.stop(peer, {:shutdown, :connect_timeout})
 
       assert has_element?(view, "#flash-error", "Couldn't connect to voice.")
+      refute has_element?(view, "#voice-panel")
       assert {:ok, []} = Chat.list_voice_states_by_channel(voice.id, actor: user)
     end
 
-    test "a crashed Peer is treated as a lost connection", %{view: view, voice: voice, user: user} do
-      peer = join_voice(view, voice)
-      ref = Process.monitor(peer)
+    test "leaving while waiting to reconnect cancels it", %{view: view, voice: voice, user: user} do
+      lost = join_voice(view, voice)
+      connected!(view)
+      GenServer.stop(lost, {:shutdown, :connection_lost})
 
-      # Unlike GenServer.stop, this returns before the Peer is gone.
-      Process.exit(peer, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^peer, :killed}
+      render_hook(view, "leave_voice_channel", %{})
+      reconnect_now(view, voice, 1)
 
-      assert has_element?(view, "#flash-error", "Voice connection lost.")
+      assert peer_of(view) == nil
+      refute has_element?(view, "#voice-panel")
       assert {:ok, []} = Chat.list_voice_states_by_channel(voice.id, actor: user)
+    end
+
+    test "a tab that connected meanwhile keeps voice; the reconnecting one stands down", %{
+      conn: conn,
+      view: view,
+      voice: voice,
+      server: server,
+      channel: channel
+    } do
+      lost = join_voice(view, voice)
+      connected!(view)
+      GenServer.stop(lost, {:shutdown, :connection_lost})
+
+      # While this tab waits, another restores voice on mount.
+      {:ok, other_tab, _} = live(conn, ~p"/chat/#{server.id}/#{channel.id}")
+      other_peer = peer_of(other_tab)
+      assert is_pid(other_peer)
+
+      reconnect_now(view, voice, 1)
+
+      assert Process.alive?(other_peer)
+      assert has_element?(view, "#flash-info", "Voice moved to another tab.")
+      refute has_element?(view, "#voice-panel")
     end
 
     test "another tab taking over voice leaves the voice state alone", %{
@@ -647,8 +775,8 @@ defmodule BanterWeb.ChatLiveTest do
       {:ok, other_tab, _} = live(conn, ~p"/chat/#{server.id}/#{channel.id}")
 
       assert has_element?(view, "#flash-info", "Voice moved to another tab.")
-      refute render(view) =~ "Voice Connected"
-      assert render(other_tab) =~ "Voice Connected"
+      refute has_element?(view, "#voice-panel")
+      assert has_element?(other_tab, "#voice-panel")
       assert {:ok, [state]} = Chat.list_voice_states_by_channel(voice.id, actor: user)
       assert state.user_id == user.id
     end
@@ -659,7 +787,7 @@ defmodule BanterWeb.ChatLiveTest do
       render_hook(view, "leave_voice_channel", %{})
 
       refute has_element?(view, "#flash-error")
-      refute render(view) =~ "Voice Connected"
+      refute has_element?(view, "#voice-panel")
     end
 
     test "switching voice channels isn't reported as a loss", %{
@@ -691,7 +819,7 @@ defmodule BanterWeb.ChatLiveTest do
 
       assert has_element?(view, "#flash-error", "Microphone access was denied.")
       assert {:ok, []} = Chat.list_voice_states_by_channel(voice.id, actor: user)
-      refute render(view) =~ "Voice Connected"
+      refute has_element?(view, "#voice-panel")
     end
 
     test "a missing microphone gets its own message", %{view: view, voice: voice} do

@@ -14,24 +14,89 @@ const Hooks = {};
 // VoiceChannel hook — one per voice session, handles the full WebRTC lifecycle.
 //
 // Flow:
-//   1. mounted() → getUserMedia → create RTCPeerConnection → addTrack → createOffer
+//   1. start() → getUserMedia → create RTCPeerConnection → addTrack → createOffer
 //   2. pushEvent("voice_offer") → server processes it → pushes "voice_answer"
 //   3. setRemoteDescription(answer) → ICE exchange completes → audio flows
 //
 // Renegotiation (when participants join/leave):
 //   Server sends "voice_offer" → we createAnswer → pushEvent("voice_answer")
 //
-// Mute/deafen come through "voice_mute_changed" / "voice_deafen_changed" events.
+// If the connection is lost, the server brings up a new Peer and pushes
+// "voice_restart"; start() tears this side down and runs the flow again
+// against it. Anything that stops the flow starting is reported as
+// "voice_failed".
+//
+// Mute/deafen come through "voice_mute_changed" / "voice_deafen_changed".
 Hooks.VoiceChannel = {
-  async mounted() {
+  mounted() {
     this.pc = null;
     this.audioEl = null;
     this.remoteStream = null;
     this.localStream = null;
+    // Which start() is current; an older one still awaiting the mic stands
+    // down when it resumes.
+    this.generation = 0;
+    // What the server last asked for. Kept here and applied whenever there's a
+    // stream to apply it to: the server pushes these as soon as the Peer
+    // exists, which is before the mic is open.
+    this.muted = false;
+    this.deafened = false;
+
+    // Registered once, not per start(): a restart would otherwise register
+    // each a second time. They act on whichever connection is current.
+    this.handleEvent("voice_offer", async ({ type, sdp }) => {
+      if (!this.pc) return;
+      try {
+        await this.pc.setRemoteDescription({ type, sdp });
+        const answer = await this.pc.createAnswer();
+        await this.pc.setLocalDescription(answer);
+        this.pushEvent("voice_answer", { type: answer.type, sdp: answer.sdp });
+      } catch (err) {
+        console.error("[VoiceChannel] renegotiation failed:", err);
+      }
+    });
+
+    this.handleEvent("voice_answer", async ({ type, sdp }) => {
+      if (!this.pc) return;
+      try {
+        await this.pc.setRemoteDescription({ type, sdp });
+      } catch (err) {
+        console.error("[VoiceChannel] setRemoteDescription(answer) failed:", err);
+      }
+    });
+
+    this.handleEvent("voice_ice_candidate", async ({ candidate, sdpMid, sdpMLineIndex }) => {
+      if (!this.pc) return;
+      try {
+        await this.pc.addIceCandidate({ candidate, sdpMid, sdpMLineIndex });
+      } catch (err) {
+        console.error("[VoiceChannel] addIceCandidate failed:", err);
+      }
+    });
+
+    this.handleEvent("voice_mute_changed", ({ muted }) => {
+      this.muted = muted;
+      this.applyMute();
+    });
+
+    this.handleEvent("voice_deafen_changed", ({ deafened }) => {
+      this.deafened = deafened;
+      this.applyDeafen();
+    });
+
+    this.handleEvent("voice_restart", () => this.start());
+
+    this.start();
+  },
+
+  async start() {
+    const generation = ++this.generation;
+    this.teardown();
 
     try {
-      await this.setupWebRTC();
+      await this.setupWebRTC(generation);
     } catch (err) {
+      if (generation !== this.generation) return;
       console.error("[VoiceChannel] setup failed:", err);
       // Nothing reached the server, so it can't find out any other way. The
       // error name (NotAllowedError for a denied mic, NotFoundError for none)
@@ -40,11 +105,11 @@ Hooks.VoiceChannel = {
     }
   },
 
-  async setupWebRTC() {
+  async setupWebRTC(generation) {
     // 1. Capture mic — use raw stream so system AEC/NS/AGC works correctly.
     // NOTE: routing mic audio through a custom AudioContext (Web Audio API) breaks
     // system-level Acoustic Echo Cancellation on mobile, causing feedback loops.
-    this.localStream = await navigator.mediaDevices.getUserMedia({
+    const localStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
@@ -52,11 +117,21 @@ Hooks.VoiceChannel = {
       },
     });
 
+    // A newer start() began while the mic prompt was open; it owns the session.
+    if (generation !== this.generation) {
+      localStream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+
+    this.localStream = localStream;
+    this.applyMute();
+
     // 2. Shared MediaStream for all incoming remote audio tracks
     this.remoteStream = new MediaStream();
     this.audioEl = new Audio();
     this.audioEl.autoplay = true;
     this.audioEl.srcObject = this.remoteStream;
+    this.applyDeafen();
     document.body.appendChild(this.audioEl);
     // iOS Safari requires an explicit play() call — autoplay alone is not enough
     this.audioEl.play().catch(() => {
@@ -91,71 +166,48 @@ Hooks.VoiceChannel = {
     };
 
     this.pc.onconnectionstatechange = () => {
-      console.log("[VoiceChannel] connection:", this.pc.connectionState);
+      console.log("[VoiceChannel] connection:", this.pc?.connectionState);
     };
 
-    // Server-initiated offer (renegotiation when participant joins/leaves)
-    this.handleEvent("voice_offer", async ({ type, sdp }) => {
-      try {
-        await this.pc.setRemoteDescription({ type, sdp });
-        const answer = await this.pc.createAnswer();
-        await this.pc.setLocalDescription(answer);
-        this.pushEvent("voice_answer", { type: answer.type, sdp: answer.sdp });
-      } catch (err) {
-        console.error("[VoiceChannel] renegotiation failed:", err);
-      }
-    });
-
-    // Server answer to our initial offer
-    this.handleEvent("voice_answer", async ({ type, sdp }) => {
-      try {
-        await this.pc.setRemoteDescription({ type, sdp });
-      } catch (err) {
-        console.error("[VoiceChannel] setRemoteDescription(answer) failed:", err);
-      }
-    });
-
-    // ICE candidate from server
-    this.handleEvent("voice_ice_candidate", async ({ candidate, sdpMid, sdpMLineIndex }) => {
-      try {
-        await this.pc.addIceCandidate({ candidate, sdpMid, sdpMLineIndex });
-      } catch (err) {
-        console.error("[VoiceChannel] addIceCandidate failed:", err);
-      }
-    });
-
-    // Mute: disable/enable mic tracks
-    this.handleEvent("voice_mute_changed", ({ muted }) => {
-      this.localStream.getAudioTracks().forEach((t) => (t.enabled = !muted));
-    });
-
-    // Deafen: mute/unmute audio output
-    this.handleEvent("voice_deafen_changed", ({ deafened }) => {
-      if (this.audioEl) this.audioEl.muted = deafened;
-    });
-
     // 4. Browser-initiated offer (initial connection)
-    const offer = await this.pc.createOffer();
-    await this.pc.setLocalDescription(offer);
+    const pc = this.pc;
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    if (generation !== this.generation) return;
     this.pushEvent("voice_offer", { type: offer.type, sdp: offer.sdp });
   },
 
-  destroyed() {
+  applyMute() {
+    this.localStream?.getAudioTracks().forEach((t) => (t.enabled = !this.muted));
+  },
+
+  applyDeafen() {
+    if (this.audioEl) this.audioEl.muted = this.deafened;
+  },
+
+  teardown() {
     if (this.localStream) {
-      this.localStream.getTracks().forEach(t => t.stop());
+      this.localStream.getTracks().forEach((t) => t.stop());
     }
     if (this.pc) {
+      this.pc.onicecandidate = null;
       this.pc.close();
-      this.pc = null;
     }
     if (this.audioEl) {
       this.audioEl.pause();
       this.audioEl.srcObject = null;
-      document.body.removeChild(this.audioEl);
-      this.audioEl = null;
+      this.audioEl.remove();
     }
+    this.pc = null;
+    this.audioEl = null;
     this.remoteStream = null;
     this.localStream = null;
+  },
+
+  destroyed() {
+    // Any start() still awaiting the mic stands down when it resumes.
+    this.generation++;
+    this.teardown();
   },
 };
 

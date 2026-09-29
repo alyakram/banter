@@ -95,6 +95,7 @@ defmodule BanterWeb.ChatLive.Components do
   attr :current_voice_channel, :map, default: nil
   attr :voice_muted, :boolean, default: false
   attr :voice_deafened, :boolean, default: false
+  attr :voice_status, :atom, default: :connecting
   attr :show_mobile_sidebar, :boolean, default: false
   attr :show_avatar_picker, :boolean, default: false
 
@@ -160,6 +161,7 @@ defmodule BanterWeb.ChatLive.Components do
           current_voice_channel={@current_voice_channel}
           voice_muted={@voice_muted}
           voice_deafened={@voice_deafened}
+          voice_status={@voice_status}
         />
         <.user_info_bar
           current_user={@current_user}
@@ -368,14 +370,23 @@ defmodule BanterWeb.ChatLive.Components do
   attr :current_voice_channel, :map, default: nil
   attr :voice_muted, :boolean, default: false
   attr :voice_deafened, :boolean, default: false
+  # :connecting until the Peer's connection first comes up, :connected once it
+  # has, :reconnecting while a lost connection is being re-established.
+  attr :voice_status, :atom, default: :connecting
 
   def voice_controls(assigns) do
     ~H"""
     <%= if @current_voice_channel do %>
-      <div class="bg-base-300 px-3 py-2 border-b border-base-300">
+      <div
+        id="voice-panel"
+        data-voice-status={@voice_status}
+        class="bg-base-300 px-3 py-2 border-b border-base-300"
+      >
         <div class="flex items-center justify-between mb-1.5">
           <div class="flex-1 min-w-0">
-            <p class="text-xs font-semibold text-success">Voice Connected</p>
+            <p class={["text-xs font-semibold", voice_status_class(@voice_status)]}>
+              {voice_status_label(@voice_status)}
+            </p>
             <p class="text-[11px] text-base-content/50 truncate"><%= @current_voice_channel.name %></p>
           </div>
           <%!-- Disconnect button --%>
@@ -1659,6 +1670,13 @@ defmodule BanterWeb.ChatLive.Components do
       _ -> "Several people are typing..."
     end
   end
+
+  defp voice_status_label(:connected), do: "Voice Connected"
+  defp voice_status_label(:reconnecting), do: "Reconnecting…"
+  defp voice_status_label(_connecting), do: "Connecting…"
+
+  defp voice_status_class(:connected), do: "text-success"
+  defp voice_status_class(_), do: "text-warning"
 
   defp detached_label(0), do: "You're viewing older messages"
   defp detached_label(1), do: "1 new message"
